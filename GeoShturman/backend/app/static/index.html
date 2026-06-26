@@ -4,435 +4,186 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="dark" />
-  <meta name="description" content="BlindFlight Terrain Lock — алгоритмический прототип автономной резервной навигации БПЛА без GNSS по DEM-карте, радиовысотомеру, барометру и инерциальной оценке движения." />
-  <title>BlindFlight Terrain Lock · автономная навигация БПЛА без GNSS</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%2334d399' d='M16 2 4 28l12-6 12 6z'/%3E%3C/svg%3E" />
+  <title>ГЕОШТУРМАН · автономная навигация (real-time)</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%2334d399' d='M16 3 4 16l12 13 12-13z'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-  <!-- ===================== ВЕРХНЯЯ ПАНЕЛЬ ===================== -->
-  <header class="topbar">
-    <div class="topbar__brand">
-      <span class="brand__mark" aria-hidden="true">
-        <svg viewBox="0 0 32 32" width="26" height="26"><path d="M16 3 5 27l11-5.4L27 27z" fill="currentColor"/></svg>
-      </span>
-      <span class="brand__text">
-        <strong>BlindFlight Terrain Lock</strong>
-        <small>алгоритм автономной навигации</small>
-      </span>
-    </div>
+  <div class="app">
 
-    <div class="topbar__status">
-      <span class="badge badge--danger" id="gnssBadge">GNSS: LOST</span>
-      <span class="topbar__mode">РЕЖИМ: <b>АВТОНОМНЫЙ</b></span>
-    </div>
-
-    <div class="topbar__telemetry" role="group" aria-label="Бортовая телеметрия">
-      <div class="ttm"><span class="ttm__label">Время системы</span><span class="ttm__value" id="sysClock">--:--:-- UTC</span></div>
-      <div class="ttm"><span class="ttm__label">Бортовой комплекс</span><span class="ttm__value">ВС-01</span></div>
-      <div class="ttm"><span class="ttm__label">Температура</span><span class="ttm__value">+18.7 °C</span></div>
-      <div class="ttm"><span class="ttm__label">Напряжение</span><span class="ttm__value">27.4 V</span></div>
-    </div>
-
-    <div class="topbar__icons" aria-hidden="true">
-      <span class="ico" title="Канал связи">⠿</span>
-      <span class="ico" title="Журнал">▤</span>
-      <span class="ico" title="Настройки">⚙</span>
-    </div>
-  </header>
-
-  <main class="page">
-
-    <!-- ===================== ВВОДНАЯ ШАПКА ===================== -->
-    <section class="hero">
-      <div class="hero__text">
-        <h1 class="hero__title">BlindFlight Terrain Lock</h1>
-        <p class="hero__subtitle">Алгоритм автономной навигации БПЛА без GNSS по рельефу и бортовым датчикам</p>
-        <p class="hero__desc">
-          Веб-интерфейс является демонстрационной оболочкой. Основной продукт — алгоритм автономной резервной
-          навигации БПЛА без GNSS, который использует радиовысотомер, барометрическую высоту, инерциальную оценку
-          движения и DEM-карту для оценки положения, скорости, азимута, радиуса ошибки и confidence.
-        </p>
-        <ul class="chips" aria-label="Режим демонстрации">
-          <li class="chip">Demo mode</li>
-          <li class="chip">Synthetic DEM</li>
-          <li class="chip">Dead Reckoning</li>
-          <li class="chip">Particle Filter</li>
-          <li class="chip">Profile Matching</li>
-        </ul>
+    <!-- ============================ ШАПКА ============================= -->
+    <header class="hdr">
+      <div class="hdr__brand">
+        <span class="hdr__logo" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="30" height="30"><path d="M16 3 4 16l12 13 12-13z" fill="none" stroke="#34d399" stroke-width="2"/><path d="M16 9 9 16l7 8 7-8z" fill="#1f8fff"/></svg>
+        </span>
+        <span class="hdr__name"><b>ГЕОШТУРМАН</b><small>автономная навигация · real-time</small></span>
       </div>
-      <div class="hero__formula" aria-hidden="true">
-        <code>terrain<sub>msl</sub> = baro<sub>msl</sub> − radio<sub>agl</sub></code>
-        <span class="hero__formula-note">восстановление абсолютного рельефа под судном</span>
+
+      <span class="hdr__gnss" id="gnssBadge">GNSS: LOST</span>
+      <span class="hdr__mode">РЕЖИМ: <b>АВТОНОМНЫЙ</b></span>
+
+      <!-- выбор борта -->
+      <div class="hdr__craft seg" id="craftSeg" role="group" aria-label="Тип борта">
+        <button type="button" class="seg__b is-active" data-craft="uav">БПЛА</button>
+        <button type="button" class="seg__b" data-craft="aircraft">Воздушное судно</button>
       </div>
-    </section>
 
-    <!-- ===================== ПАРАМЕТРЫ ДЕМОНСТРАЦИИ ===================== -->
-    <section class="panel panel--control">
-      <header class="panel__head">
-        <h2 class="panel__title">Параметры демонстрации</h2>
-        <button type="button" class="panel__toggle" id="paramsToggle" aria-expanded="true" aria-controls="paramsBody">Свернуть</button>
-      </header>
+      <!-- управление потоком -->
+      <div class="hdr__stream">
+        <span class="conn" id="connState"><i class="conn__dot"></i><span id="connText">офлайн</span></span>
+        <button type="button" class="sbtn sbtn--go" id="btnStart">▶ Старт</button>
+        <button type="button" class="sbtn" id="btnStop">⏸ Стоп</button>
+        <button type="button" class="sbtn" id="btnReset">⟳ Сброс</button>
+      </div>
 
-      <form id="demoForm" class="form" novalidate>
-        <div class="form__grid" id="paramsBody">
-          <label class="field"><span class="field__label">Размер карты X, м</span>
-            <input class="field__input" type="number" name="width_m" id="width_m" value="8000" min="1000" max="20000" step="100" inputmode="numeric" />
-          </label>
-          <label class="field"><span class="field__label">Размер карты Y, м</span>
-            <input class="field__input" type="number" name="height_m" id="height_m" value="8000" min="1000" max="20000" step="100" inputmode="numeric" />
-          </label>
-          <label class="field"><span class="field__label">Разрешение DEM, м</span>
-            <input class="field__input" type="number" name="resolution_m" id="resolution_m" value="30" min="5" max="120" step="5" inputmode="numeric" />
-          </label>
-          <label class="field"><span class="field__label">Длительность полёта, с</span>
-            <input class="field__input" type="number" name="duration_s" id="duration_s" value="120" min="10" max="600" step="5" inputmode="numeric" />
-          </label>
-          <label class="field"><span class="field__label">Частота радиовысотомера, Гц</span>
-            <input class="field__input" type="number" name="sample_rate_hz" id="sample_rate_hz" value="5" min="1" max="10" step="1" inputmode="numeric" />
-          </label>
-          <label class="field"><span class="field__label">Истинная скорость БПЛА, м/с</span>
-            <input class="field__input" type="number" name="true_speed_mps" id="speed_mps" value="18" min="5" max="80" step="1" inputmode="numeric" />
-          </label>
-          <label class="field"><span class="field__label">Истинный курс БПЛА, °</span>
-            <input class="field__input" type="number" name="true_heading_deg" id="azimuth_deg" value="73" min="0" max="359" step="1" inputmode="numeric" />
-          </label>
-          <label class="field"><span class="field__label">Барометрическая высота, м</span>
-            <input class="field__input" type="number" name="barometric_altitude_msl" id="barometric_altitude_msl" value="1500" min="100" max="9000" step="50" inputmode="numeric" />
-          </label>
-          <label class="field"><span class="field__label">Начальная неопределённость, м</span>
-            <input class="field__input" type="number" name="initial_uncertainty_radius_m" id="initial_uncertainty_radius_m" value="500" min="50" max="2500" step="50" inputmode="numeric" />
-          </label>
-          <label class="field"><span class="field__label">Количество частиц</span>
-            <input class="field__input" type="number" name="n_particles" id="n_particles" value="5000" min="100" max="10000" step="100" inputmode="numeric" />
-          </label>
-          <label class="field"><span class="field__label">Окно profile matching, с</span>
-            <input class="field__input" type="number" name="profile_window_s" id="profile_window_s" value="30" min="5" max="120" step="5" inputmode="numeric" />
-          </label>
-          <label class="field field--check">
-            <input type="checkbox" name="enable_kalman" id="enable_kalman" checked />
-            <span class="field__label">Показывать демонстрационные графики</span>
-          </label>
-        </div>
+      <div class="hdr__time">
+        <small>ВРЕМЯ СИСТЕМЫ</small>
+        <b id="sysClock">--:--:-- UTC</b>
+      </div>
+    </header>
 
-        <div class="form__actions">
-          <button type="submit" class="btn btn--primary" id="runBtn">
-            <span class="btn__spinner" aria-hidden="true"></span>
-            <span class="btn__label">Запустить демонстрацию</span>
-          </button>
-          <p class="form__hint" id="formHint">Параметры запускают автономный алгоритм: Dead Reckoning + Particle Filter + Terrain Lock.</p>
-        </div>
-      </form>
-    </section>
+    <!-- ============================ СЕТКА ============================= -->
+    <div class="grid">
 
-    <!-- ===================== СТАТУС РАСЧЁТА ===================== -->
-    <section class="loading" id="loading" hidden aria-live="polite">
-      <div class="loading__bar"><span class="loading__fill" id="loadingFill"></span></div>
-      <p class="loading__text">Идёт расчёт: генерация DEM, sensor stream, Dead Reckoning и Particle Filter Terrain Lock…</p>
-    </section>
-
-    <!-- предупреждение от backend -->
-    <div class="warning" id="warning" hidden role="alert"></div>
-
-    <!-- ===================== ОСНОВНАЯ СЕТКА ДАШБОРДА ===================== -->
-    <div class="dashboard" id="dashboard">
-
-      <!-- --------- ЛЕВАЯ КОЛОНКА --------- -->
-      <div class="col col--left">
-
-        <!-- Состояние полёта -->
-        <section class="panel">
-          <header class="panel__head"><h2 class="panel__title">Состояние полёта</h2></header>
-          <div class="panel__body flight">
-            <div class="flight__compass">
-              <canvas id="compass" width="150" height="150" aria-label="Компас курса"></canvas>
-            </div>
-            <ul class="metrics-list">
-              <li class="ml"><span class="ml__label">Скорость</span><span class="ml__value"><b id="m-speed">—</b> м/с</span><span class="ml__bar"><i id="bar-speed"></i></span></li>
-              <li class="ml"><span class="ml__label">Азимут</span><span class="ml__value"><b id="m-azimuth">—</b> °</span><span class="ml__bar"><i id="bar-azimuth"></i></span></li>
-              <li class="ml"><span class="ml__label">Высота (баро)</span><span class="ml__value"><b id="m-baro">1500</b> м</span><span class="ml__bar"><i id="bar-baro" style="width:60%"></i></span></li>
-              <li class="ml"><span class="ml__label">Вероятность</span><span class="ml__value"><b id="m-prob">—</b> %</span><span class="ml__bar"><i id="bar-prob"></i></span></li>
-              <li class="ml"><span class="ml__label">Пройдено</span><span class="ml__value"><b id="m-distance">—</b> км</span><span class="ml__bar"><i id="bar-distance"></i></span></li>
-              <li class="ml"><span class="ml__label">Время полёта</span><span class="ml__value"><b id="m-time">00:00:00</b></span><span class="ml__bar"><i id="bar-time"></i></span></li>
-            </ul>
+      <!-- ------------------- ЛЕВАЯ КОЛОНКА ------------------- -->
+      <aside class="col-left">
+        <section class="card card--course">
+          <h2 class="card__t">Курс и скорость</h2>
+          <div class="course">
+            <canvas id="compass" width="180" height="180"></canvas>
+            <div class="course__speed"><b id="m-speed">—</b><span>м/с</span><small>СКОРОСТЬ</small></div>
           </div>
         </section>
 
-        <!-- Относительная высота / радиовысотомер -->
-        <section class="panel">
-          <header class="panel__head"><h2 class="panel__title">Относительная высота · радиовысотомер</h2></header>
-          <div class="panel__body radio">
-            <div class="radio__value"><b id="m-radio">—</b><span>м над землёй (AGL)</span></div>
-            <canvas id="sparkRadio" class="spark" width="320" height="64" aria-label="График высоты над землёй"></canvas>
-          </div>
+        <section class="card card--alt">
+          <h2 class="card__t">Высота</h2>
+          <div class="bigval"><b id="m-baro">1500</b><span>м</span></div>
+          <p class="muted">(БАРОМЕТР)</p>
         </section>
 
-        <!-- Датчики -->
-        <section class="panel">
-          <header class="panel__head"><h2 class="panel__title">Состояние систем</h2></header>
-          <ul class="sensors">
-            <li class="sensor"><span class="dot dot--ok"></span>Радиовысотомер<span class="sensor__state ok">OK</span></li>
-            <li class="sensor"><span class="dot dot--ok"></span>ИНС<span class="sensor__state ok">OK</span></li>
-            <li class="sensor"><span class="dot dot--ok"></span>Барометр<span class="sensor__state ok">OK</span></li>
-            <li class="sensor"><span class="dot dot--danger"></span>GNSS<span class="sensor__state danger">LOST</span></li>
-            <li class="sensor"><span class="dot dot--ok"></span>Датчик курса<span class="sensor__state ok">OK</span></li>
-            <li class="sensor"><span class="dot dot--ok"></span>DEM-покрытие<span class="sensor__state ok">OK</span></li>
-            <li class="sensor"><span class="dot dot--ok" id="kalmanDot"></span>Калман-фильтр<span class="sensor__state ok" id="kalmanState">АКТИВЕН</span></li>
+        <section class="card">
+          <h2 class="card__t">Относительная высота</h2>
+          <div class="bigval bigval--green"><b id="m-radio">—</b><span>м</span></div>
+          <p class="muted">(РАДИОВЫСОТОМЕР · AGL)</p>
+          <canvas id="sparkRadio" class="spark" width="240" height="48"></canvas>
+        </section>
+
+        <section class="card card--grow">
+          <h2 class="card__t">Статус миссии</h2>
+          <ul class="mission">
+            <li><span>ИСТОЧНИК</span><b id="m-source">—</b></li>
+            <li><span>ЗАМЕРОВ</span><b id="m-count">0</b></li>
+            <li><span>ВРЕМЯ ПОТОКА</span><b id="m-time">00:00:00</b></li>
+            <li><span>ДОСТОВЕРНОСТЬ</span><b id="m-acc">—</b></li>
+            <li><span>РЕЖИМ</span><b class="green">АВТОНОМНЫЙ</b></li>
           </ul>
-          <div class="gauges">
-            <div class="gauge-mini"><span class="gauge-mini__label">CPU</span><span class="gauge-mini__bar"><i id="cpuBar" style="width:34%"></i></span><span class="gauge-mini__val">34%</span></div>
-            <div class="gauge-mini"><span class="gauge-mini__label">Память</span><span class="gauge-mini__bar"><i style="width:58%"></i></span><span class="gauge-mini__val">58%</span></div>
-            <div class="gauge-mini"><span class="gauge-mini__label">Темп.</span><span class="gauge-mini__bar"><i style="width:45%"></i></span><span class="gauge-mini__val">45°C</span></div>
-          </div>
         </section>
+      </aside>
 
-        <!-- Сообщения системы -->
-        <section class="panel panel--grow">
-          <header class="panel__head"><h2 class="panel__title">Сообщения системы</h2></header>
-          <ol class="msglog" id="msgLog" aria-live="polite">
-            <li class="msg msg--idle"><time>--:--:--</time><span>Ожидание запуска демонстрации…</span></li>
-          </ol>
-        </section>
-      </div>
-
-      <!-- --------- ЦЕНТРАЛЬНАЯ КОЛОНКА --------- -->
-      <div class="col col--center">
-
-        <!-- Карта рельефа -->
-        <section class="panel panel--map">
-          <header class="panel__head">
-            <h2 class="panel__title">Карта рельефа</h2>
-            <div class="seg" role="tablist" aria-label="Вид карты">
-              <button class="seg__btn is-active" data-view="2d" type="button">2D</button>
-              <button class="seg__btn" data-view="3d" type="button">3D вид</button>
-            </div>
+      <!-- ------------------- ЦЕНТР ------------------- -->
+      <main class="col-center">
+        <section class="card card--map">
+          <header class="card__head">
+            <h2 class="card__t">Карта рельефа <span class="card__ico">▦</span></h2>
+            <span class="badge3d">3D ВИД · LIVE</span>
           </header>
           <div class="map">
-            <img id="mapTrajectory" class="map__img" alt="Карта высот с наложенной траекторией" hidden />
-            <div class="map__placeholder" id="mapPlaceholder">
-              <div class="map__grid"></div>
-              <p>Карта высот появится после запуска демонстрации</p>
+            <canvas id="terrainCanvas"></canvas>
+            <div class="map__hud" id="mapHud" hidden>
+              <span class="map__hud-t">НАЙДЕННОЕ ПОЛОЖЕНИЕ</span>
+              <span><b id="fp-lat">—</b> N&nbsp; <b id="fp-lon">—</b> E</span>
+              <span>Высота: <b id="fp-alt">—</b> м · Точность: <b id="fp-acc">—</b>%</span>
             </div>
-
-            <div class="map__found" id="foundPos" hidden>
-              <span class="map__found-title">Найденное положение</span>
-              <span class="map__found-row"><b id="fp-lat">—</b> N&nbsp;&nbsp;<b id="fp-lon">—</b> E</span>
-              <span class="map__found-row">Высота: <b id="fp-alt">—</b> м</span>
-              <span class="map__found-row">Точность: <b id="fp-acc">—</b> %</span>
-            </div>
-
-            <svg class="map__rose" viewBox="0 0 64 64" aria-hidden="true">
-              <circle cx="32" cy="32" r="28" fill="none" stroke="rgba(255,255,255,.25)"/>
-              <path d="M32 8 36 32 32 28 28 32z" fill="#34d399"/>
-              <path d="M32 56 28 32 32 36 36 32z" fill="rgba(255,255,255,.35)"/>
-              <text x="32" y="6" text-anchor="middle" fill="#9fb2c6" font-size="7">N</text>
-              <text x="32" y="62" text-anchor="middle" fill="#9fb2c6" font-size="7">S</text>
-              <text x="61" y="34" text-anchor="middle" fill="#9fb2c6" font-size="7">E</text>
-              <text x="3" y="34" text-anchor="middle" fill="#9fb2c6" font-size="7">W</text>
-            </svg>
-
-            <div class="map__controls" aria-hidden="true">
-              <button type="button" class="map__ctl">⌖</button>
-              <button type="button" class="map__ctl">▦</button>
-              <button type="button" class="map__ctl">＋</button>
-              <button type="button" class="map__ctl">－</button>
+            <div class="map__ctl" aria-hidden="true">
+              <span>⌖</span><span>⛰</span><span>≋</span><span>＋</span><span>－</span>
             </div>
           </div>
         </section>
 
-        <!-- Нижний ряд центра -->
         <div class="row3">
-          <!-- Траектория -->
-          <section class="panel">
-            <header class="panel__head"><h2 class="panel__title">Траектория</h2></header>
-            <div class="panel__body">
-              <canvas id="trajCanvas" class="traj" width="320" height="170" aria-label="Пройденный путь и найденная траектория"></canvas>
+          <section class="card card--profile">
+            <header class="card__head">
+              <h2 class="card__t">Профиль высот</h2>
               <ul class="legend">
-                <li><span class="legend__line legend__line--solid"></span>Пройденный путь</li>
-                <li><span class="legend__line legend__line--dash"></span>Найденная траектория</li>
+                <li><i class="ln ln--green"></i>Радиовысотомер</li>
+                <li><i class="ln ln--blue"></i>Рельеф (DEM)</li>
               </ul>
-            </div>
+            </header>
+            <canvas id="profileCanvas" class="profile"></canvas>
           </section>
 
-          <!-- Статус алгоритма -->
-          <section class="panel">
-            <header class="panel__head"><h2 class="panel__title">Статус алгоритма</h2></header>
-            <ul class="algo" id="algoSteps">
-              <li class="algo__step" data-step="0"><span class="algo__mark"></span>Получение данных<span class="algo__ok">—</span></li>
-              <li class="algo__step" data-step="1"><span class="algo__mark"></span>Построение профиля<span class="algo__ok">—</span></li>
-              <li class="algo__step" data-step="2"><span class="algo__mark"></span>Генерация эталонов<span class="algo__ok">—</span></li>
-              <li class="algo__step" data-step="3"><span class="algo__mark"></span>Terrain Lock<span class="algo__ok">—</span></li>
-              <li class="algo__step" data-step="4"><span class="algo__mark"></span>Решение найдено<span class="algo__ok">—</span></li>
+          <section class="card card--stream">
+            <header class="card__head"><h2 class="card__t">Поток NMEA <span class="muted-i">(вход)</span></h2></header>
+            <ol class="nmea" id="nmeaLog"></ol>
+          </section>
+
+          <section class="card card--sys">
+            <header class="card__head"><h2 class="card__t">Состояние систем</h2></header>
+            <ul class="sys">
+              <li><i class="sys__i sys__i--radio"></i><span>РАДИОВЫСОТОМЕР</span><b class="ok">OK</b></li>
+              <li><i class="sys__i sys__i--ins"></i><span>ИНС</span><b class="ok">OK</b></li>
+              <li><i class="sys__i sys__i--baro"></i><span>БАРОМЕТР</span><b class="ok">OK</b></li>
+              <li><i class="sys__i sys__i--dem"></i><span>DEM ПОКРЫТИЕ</span><b class="ok">OK</b></li>
+              <li><i class="sys__i sys__i--kalman"></i><span>КАЛМАН-ФИЛЬТР</span><b class="ok" id="kalmanState">АКТИВЕН</b></li>
+              <li><i class="sys__i sys__i--cpu"></i><span>ПОТОК</span><b class="green" id="sysStream">—</b></li>
+              <li><i class="sys__i sys__i--temp"></i><span>РЕШАТЕЛЬ ЯДРА</span><b class="green" id="sysSolver">ОЖИДАНИЕ</b></li>
+              <li class="sys__gauge"><canvas id="loadGauge" width="56" height="56"></canvas><span id="loadPct">0%</span></li>
             </ul>
-          </section>
-
-          <!-- Точность решения -->
-          <section class="panel">
-            <header class="panel__head"><h2 class="panel__title">Точность решения</h2></header>
-            <div class="panel__body accuracy">
-              <canvas id="accuracyPolar" width="140" height="140" aria-label="Эллипс рассеяния"></canvas>
-              <ul class="accuracy__list">
-                <li><span>CEP</span><b id="a-cep">—</b><small>м</small></li>
-                <li><span>SEP</span><b id="a-sep">—</b><small>м</small></li>
-                <li><span>Вертик.</span><b id="a-vert">—</b><small>м</small></li>
-              </ul>
-            </div>
           </section>
         </div>
-      </div>
+      </main>
 
-      <!-- --------- ПРАВАЯ КОЛОНКА --------- -->
-      <div class="col col--right">
-
-        <!-- Облако частиц -->
-        <section class="panel">
-          <header class="panel__head">
-            <h2 class="panel__title">Облако частиц</h2>
-            <span class="panel__hint" title="Particle Filter хранит множество гипотез положения и взвешивает их по совпадению с DEM">?</span>
+      <!-- ------------------- ПРАВАЯ КОЛОНКА ------------------- -->
+      <aside class="col-right">
+        <section class="card card--corr">
+          <header class="card__head">
+            <h2 class="card__t">Корреляционный анализ</h2>
+            <span class="bestmatch-tag"><i></i>ЛУЧШЕЕ СОВПАДЕНИЕ</span>
           </header>
           <div class="corr">
-            <img id="heatmap" class="corr__img" alt="Тепловая карта корреляции" hidden />
-            <div class="corr__placeholder" id="heatmapPlaceholder">
-              <canvas id="heatmapDemo" width="300" height="200" aria-hidden="true"></canvas>
-              <p>Облако частиц появится после расчёта</p>
-            </div>
-            <div class="corr__axes" aria-hidden="true">
-              <span class="corr__x">Локальная координата X</span>
-              <span class="corr__y">Локальная координата Y</span>
-            </div>
+            <canvas id="corrCanvas"></canvas>
+            <span class="corr__ax corr__ax--x">АЗИМУТ, °</span>
+            <span class="corr__ax corr__ax--y">СМЕЩЕНИЕ, КМ</span>
           </div>
         </section>
 
-        <!-- Лучшее совпадение -->
-        <section class="panel">
-          <header class="panel__head"><h2 class="panel__title">Лучшее совпадение</h2></header>
-          <div class="panel__body bestmatch">
-            <canvas id="matchGauge" width="150" height="150" aria-label="Достоверность решения"></canvas>
-            <dl class="bestmatch__list">
-              <div><dt>Азимут</dt><dd><b id="bm-azimuth">—</b> °</dd></div>
-              <div><dt>Смещение</dt><dd><b id="bm-offset">—</b> км</dd></div>
-              <div><dt>Terrain lock ratio</dt><dd><b id="bm-corr">—</b></dd></div>
-              <div><dt>Достоверность</dt><dd><b id="bm-conf">—</b> %</dd></div>
+        <section class="card card--match card--grow">
+          <header class="card__head"><h2 class="card__t">Лучшее совпадение</h2></header>
+          <div class="match">
+            <dl class="match__list">
+              <div><dt>АЗИМУТ</dt><dd><b id="bm-az">—</b>°</dd></div>
+              <div><dt>СКОРОСТЬ</dt><dd><b id="bm-spd">—</b> м/с</dd></div>
+              <div><dt>КОРРЕЛЯЦИЯ</dt><dd><b id="bm-corr">—</b></dd></div>
+              <div><dt>ДОСТОВЕРНОСТЬ</dt><dd><b id="bm-conf">—</b> %</dd></div>
             </dl>
+            <canvas id="confGauge" width="150" height="150"></canvas>
           </div>
         </section>
-
-        <!-- Метрики решения -->
-        <section class="panel">
-          <header class="panel__head"><h2 class="panel__title">Метрики решения</h2></header>
-          <div class="cards">
-            <div class="card"><span class="card__label">Оцененный курс</span><span class="card__value"><b id="r-azimuth">—</b>°</span></div>
-            <div class="card"><span class="card__label">Оцененная скорость</span><span class="card__value"><b id="r-speed">—</b><small>м/с</small></span></div>
-            <div class="card"><span class="card__label">Improvement factor</span><span class="card__value"><b id="r-corr">—</b></span></div>
-            <div class="card"><span class="card__label">Final position error</span><span class="card__value"><b id="r-rmse">—</b><small>м</small></span></div>
-            <div class="card"><span class="card__label">Confidence</span><span class="card__value"><b id="r-conf">—</b></span></div>
-            <div class="card"><span class="card__label">Navigation mode</span><span class="card__value"><span class="quality" id="r-quality">—</span></span></div>
-          </div>
-        </section>
-
-        <!-- Профиль высот -->
-        <section class="panel">
-          <header class="panel__head"><h2 class="panel__title">Профиль высот</h2></header>
-          <div class="profile">
-            <img id="profileImg" class="profile__img" alt="Сравнение профилей высот" hidden />
-            <canvas id="profileCanvas" class="profile__canvas" width="360" height="180" aria-label="Профиль: радиовысотомер и карта рельефа"></canvas>
-            <ul class="legend legend--center">
-              <li><span class="legend__line" style="background:var(--accent-violet)"></span>Радиовысотомер</li>
-              <li><span class="legend__line" style="background:var(--accent-green)"></span>Карта рельефа</li>
-            </ul>
-          </div>
-        </section>
-
-        <section class="panel">
-          <header class="panel__head"><h2 class="panel__title">Confidence timeline</h2></header>
-          <div class="profile">
-            <img id="confidenceImg" class="profile__img" alt="График confidence и радиуса ошибки по времени" hidden />
-          </div>
-        </section>
-      </div>
+      </aside>
     </div>
 
-    <!-- ===================== СРАВНЕНИЕ TRUTH vs ESTIMATED ===================== -->
-    <section class="panel">
-      <header class="panel__head"><h2 class="panel__title">Сравнение: истинное и найденное</h2></header>
-      <div class="table-wrap">
-        <table class="cmp">
-          <thead>
-            <tr><th>Параметр</th><th>Истинное значение</th><th>Найденное значение</th><th>Δ отклонение</th></tr>
-          </thead>
-          <tbody id="cmpBody">
-            <tr><td>Азимут</td><td data-truth>—</td><td data-est>—</td><td data-delta>—</td></tr>
-            <tr><td>Скорость</td><td data-truth>—</td><td data-est>—</td><td data-delta>—</td></tr>
-            <tr><td>Старт X</td><td data-truth>—</td><td data-est>—</td><td data-delta>—</td></tr>
-            <tr><td>Старт Y</td><td data-truth>—</td><td data-est>—</td><td data-delta>—</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
+    <!-- ============================ НИЗ ============================= -->
+    <footer class="foot">
+      <section class="card card--msg">
+        <header class="card__head"><h2 class="card__t">Сообщения системы</h2></header>
+        <ol class="msgs" id="msgs"></ol>
+      </section>
 
-    <!-- ===================== СКАЧИВАНИЕ ===================== -->
-    <section class="panel">
-      <header class="panel__head"><h2 class="panel__title">Артефакты расчёта</h2></header>
-      <div class="downloads">
-        <a class="dl is-disabled" id="dl-json" download><span class="dl__ico">⬇</span>Скачать result.json</a>
-        <a class="dl is-disabled" id="dl-traj" download><span class="dl__ico">⬇</span>Сравнение траекторий</a>
-        <a class="dl is-disabled" id="dl-heat" download><span class="dl__ico">⬇</span>Облако частиц</a>
-        <a class="dl is-disabled" id="dl-confidence" download><span class="dl__ico">⬇</span>Confidence timeline</a>
-        <a class="dl is-disabled" id="dl-profile" download><span class="dl__ico">⬇</span>Profile match</a>
-      </div>
-    </section>
+      <section class="card card--nav" id="navBanner">
+        <span class="nav__ic" aria-hidden="true">
+          <svg viewBox="0 0 48 48" width="44" height="44"><circle cx="24" cy="24" r="21" fill="none" stroke="#34d399" stroke-width="1.5" opacity=".5"/><path d="M24 11 14 33l10-5 10 5z" fill="#34d399"/></svg>
+        </span>
+        <div class="nav__txt">
+          <b id="navTitle">ОЖИДАНИЕ ПОТОКА</b>
+          <span id="navSub">Нажмите «Старт» или подайте поток NMEA на /api/stream/ingest</span>
+        </div>
+      </section>
+    </footer>
+  </div>
 
-    <!-- ===================== КАК ЭТО РАБОТАЕТ ===================== -->
-    <section class="panel">
-      <header class="panel__head"><h2 class="panel__title">Как это работает</h2></header>
-      <div class="how">
-        <ol class="pipeline">
-          <li>Dead Reckoning</li>
-          <li>Рельеф из baro − radar</li>
-          <li>Particle Filter</li>
-          <li>Profile Matching с DEM</li>
-          <li>Координаты · курс · confidence</li>
-        </ol>
-        <p class="how__text">
-          Алгоритм сначала ведёт БПЛА по Dead Reckoning: скорость, курс и время дают прогноз движения без GNSS.
-          Затем радиовысотомер и барометр восстанавливают профиль рельефа по формуле <code>terrain = baro − radar</code>.
-          Particle Filter хранит облако гипотез положения, сравнивает каждую с DEM по текущей высоте и окну профиля,
-          пересчитывает веса частиц и выдаёт координаты, скорость, курс, радиус ошибки и confidence.
-        </p>
-      </div>
-    </section>
-
-    <!-- ===================== ГРАЖДАНСКИЕ СЦЕНАРИИ ===================== -->
-    <section class="panel">
-      <header class="panel__head"><h2 class="panel__title">Гражданские сценарии применения</h2></header>
-      <div class="scenarios">
-        <article class="scn"><h3>Доставка медикаментов</h3><p>Резервная навигация для маршрутов в удалённые таёжные посёлки.</p></article>
-        <article class="scn"><h3>Арктические станции</h3><p>Снабжение метеостанций при нестабильном GNSS в высоких широтах.</p></article>
-        <article class="scn"><h3>Геологоразведка</h3><p>Доставка оборудования и данных в полевые лагеря без ориентиров.</p></article>
-        <article class="scn"><h3>Высокогорные базы</h3><p>Поддержка маршрутов в долинах и над горными плато.</p></article>
-        <article class="scn"><h3>Анализ полёта</h3><p>Постфактум-восстановление траектории при потере сигнала GNSS.</p></article>
-        <article class="scn"><h3>Безопасность полётов</h3><p>Дополнительный навигационный слой для гражданских воздушных судов.</p></article>
-      </div>
-    </section>
-
-    <!-- ===================== БАННЕР НАВИГАЦИИ ===================== -->
-    <section class="navbanner" id="navBanner" hidden>
-      <span class="navbanner__ico" aria-hidden="true">
-        <svg viewBox="0 0 32 32" width="34" height="34"><path d="M16 3 5 27l11-5.4L27 27z" fill="currentColor"/></svg>
-      </span>
-      <div class="navbanner__text">
-        <strong>Навигация активна</strong>
-        <span>Курс скорректирован. Полёт продолжается.</span>
-      </div>
-    </section>
-
-  </main>
-
-  <footer class="footer">
-    <span>BlindFlight Terrain Lock · алгоритмический прототип</span>
-    <span class="footer__muted">Demo shell · Synthetic data · Civil use only</span>
-  </footer>
-
+  <script src="/static/vendor/three.min.js"></script>
+  <script src="/static/three-scenes.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

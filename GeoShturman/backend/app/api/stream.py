@@ -1,0 +1,321 @@
+"""
+Реальный поток данных навигации (real-time).
+
+Кейсодатель подаёт строки NMEA-0183 ($GPGGA) живым потоком. Этот модуль:
+  * принимает поток (WebSocket /api/stream/ingest или HTTP POST /api/stream/ingest);
+  * на каждый валидный замер обновляет телеметрию и периодически пересчитывает
+    решение ядром (azimuth/speed/position/confidence);
+  * транслирует обновления всем подключённым дашбордам по WebSocket /api/stream/live;
+  * умеет генерировать демонстрационный поток (/api/stream/simulate) — чтобы
+    показать работу в реальном времени без внешнего источника.
+
+Дашборд при этом обновляет позицию «на лету».
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import math
+import time
+from typing import Any
+
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+# Геопривязка синтетической DEM (как в pipeline.solve_navigation_from_nmea)
+ORIGIN_LAT = 56.10
+ORIGIN_LON = 37.20
+
+# Параметры окна/решателя
+MAX_WINDOW = 240          # сколько последних замеров держим для решения
+MIN_SAMPLES_TO_SOLVE = 16  # минимум замеров для запуска ядра
+SOLVE_EVERY_S = 2.5        # как часто пересчитывать решение (по времени потока)
+
+
+def _meters_to_latlon(x_m: float, y_m: float) -> tuple[float, float]:
+    lat = ORIGIN_LAT + y_m / 111_320.0
+    lon = ORIGIN_LON + x_m / (111_320.0 * math.cos(math.radians(ORIGIN_LAT)))
+    return round(lat, 6), round(lon, 6)
+
+
+class StreamHub:
+    """Состояние потока + список подписчиков-дашбордов."""
+
+    def __init__(self) -> None:
+        self.clients: set[WebSocket] = set()
+        self.samples: list[dict[str, Any]] = []   # {t_s, radio_agl, terrain_msl, raw}
+        self.baro_msl: float = 1500.0
+        self.started_at: float | None = None
+        self.last_solve_at: float = 0.0
+        self.solving: bool = False
+        self.last_solution: dict[str, Any] | None = None
+        self.sim_task: asyncio.Task | None = None
+        self.lock = asyncio.Lock()
+
+    # ------------------------- подписчики -------------------------
+    async def register(self, ws: WebSocket) -> None:
+        await ws.accept()
+        self.clients.add(ws)
+        await self._send(ws, {"type": "hello", "n_valid": len([s for s in self.samples if s]),
+                              "baro_msl": self.baro_msl,
+                              "last_solution": self.last_solution})
+
+    def unregister(self, ws: WebSocket) -> None:
+        self.clients.discard(ws)
+
+    async def _send(self, ws: WebSocket, msg: dict[str, Any]) -> None:
+        try:
+            await ws.send_json(msg)
+        except Exception:
+            self.clients.discard(ws)
+
+    async def broadcast(self, msg: dict[str, Any]) -> None:
+        for ws in list(self.clients):
+            await self._send(ws, msg)
+
+    # ------------------------- приём данных -------------------------
+    async def reset(self) -> None:
+        self.samples.clear()
+        self.started_at = None
+        self.last_solution = None
+        self.last_solve_at = 0.0
+        await self.broadcast({"type": "reset"})
+
+    async def ingest_text(self, text: str, baro_msl: float | None = None) -> dict[str, int]:
+        if baro_msl is not None:
+            self.baro_msl = float(baro_msl)
+        # ленивый импорт ядра парсинга
+        from app.services.pipeline import parse_nmea_text
+
+        measurements = parse_nmea_text(text)
+        ingested = 0
+        valid = 0
+        for m in measurements:
+            ingested += 1
+            if not m.get("valid"):
+                continue
+            valid += 1
+            await self._add_sample(m)
+        await self._maybe_solve()
+        return {"ingested": ingested, "valid": valid, "total_valid": len(self.samples)}
+
+    async def _add_sample(self, m: dict[str, Any]) -> None:
+        if self.started_at is None:
+            self.started_at = time.monotonic()
+        radio = float(m["radio_altitude_agl_m"])
+        terrain = self.baro_msl - radio
+        t_s = m.get("timestamp_s")
+        sample = {"t_s": t_s, "radio_agl": radio, "terrain_msl": terrain, "raw": m["raw"]}
+        self.samples.append(sample)
+        if len(self.samples) > MAX_WINDOW * 2:
+            self.samples = self.samples[-MAX_WINDOW:]
+
+        elapsed = time.monotonic() - self.started_at
+        await self.broadcast({
+            "type": "telemetry",
+            "n_valid": len(self.samples),
+            "radio_agl": round(radio, 1),
+            "terrain_msl": round(terrain, 1),
+            "baro_msl": round(self.baro_msl, 1),
+            "elapsed_s": round(elapsed, 1),
+            "raw": m["raw"],
+        })
+
+    async def _maybe_solve(self) -> None:
+        if self.solving or len(self.samples) < MIN_SAMPLES_TO_SOLVE:
+            return
+        now = time.monotonic()
+        if now - self.last_solve_at < SOLVE_EVERY_S and self.last_solution is not None:
+            return
+        self.last_solve_at = now
+        self.solving = True
+        window = self.samples[-MAX_WINDOW:]
+        asyncio.create_task(self._run_solve(window))
+
+    async def _run_solve(self, window: list[dict[str, Any]]) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+            solution = await loop.run_in_executor(None, _solve_window, window, self.baro_msl)
+            if solution:
+                self.last_solution = solution
+                await self.broadcast({"type": "solution", **solution})
+        except Exception:
+            logger.exception("stream solve failed")
+        finally:
+            self.solving = False
+
+    # ------------------------- симулятор -------------------------
+    async def start_simulation(self, *, hz: float, duration_s: float, speed_mps: float,
+                               heading_deg: float, baro_msl: float) -> None:
+        await self.stop_simulation()
+        await self.reset()
+        self.baro_msl = float(baro_msl)
+        self.sim_task = asyncio.create_task(
+            self._simulate(hz=hz, duration_s=duration_s, speed_mps=speed_mps,
+                           heading_deg=heading_deg, baro_msl=baro_msl)
+        )
+
+    async def stop_simulation(self) -> None:
+        if self.sim_task and not self.sim_task.done():
+            self.sim_task.cancel()
+            try:
+                await self.sim_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self.sim_task = None
+
+    async def _simulate(self, *, hz: float, duration_s: float, speed_mps: float,
+                        heading_deg: float, baro_msl: float) -> None:
+        from app.core.dem import create_synthetic_dem
+        from app.core.nmea import build_gpgga_sentence
+        from app.core.simulator import generate_sensor_stream, generate_truth_trajectory
+
+        loop = asyncio.get_running_loop()
+        dem = await loop.run_in_executor(None, lambda: create_synthetic_dem(
+            width_m=8000, height_m=8000, resolution_m=30, seed=42,
+            terrain_type="mixed", origin_lat_deg=ORIGIN_LAT, origin_lon_deg=ORIGIN_LON))
+        truth = generate_truth_trajectory(
+            start_x_m=4000, start_y_m=4000, speed_mps=speed_mps,
+            azimuth_deg=heading_deg, duration_s=duration_s, sample_rate_hz=hz)
+        stream = generate_sensor_stream(dem=dem, truth_trajectory=truth,
+                                        barometric_altitude_msl=baro_msl, seed=7)
+        await self.broadcast({"type": "stream_start",
+                              "truth": {"azimuth_deg": round(heading_deg, 1),
+                                        "speed_mps": round(speed_mps, 1)},
+                              "source": "simulation"})
+        period = 1.0 / max(hz, 0.5)
+        for item in stream:
+            line = build_gpgga_sentence(item["t_s"], item["radar_altitude_agl"])
+            await self.ingest_text(line)
+            await asyncio.sleep(period)
+        await self.broadcast({"type": "stream_end"})
+
+
+def _solve_window(window: list[dict[str, Any]], baro_msl: float) -> dict[str, Any] | None:
+    """Синхронный пересчёт решения ядром по накопленному окну NMEA."""
+    try:
+        from app.core.dem import create_synthetic_dem
+        from app.core.navigation import solve_navigation
+
+        nmea_text = "\n".join(s["raw"] for s in window)
+        dem = create_synthetic_dem(width_m=8000, height_m=8000, resolution_m=30, seed=42,
+                                   terrain_type="mixed", origin_lat_deg=ORIGIN_LAT, origin_lon_deg=ORIGIN_LON)
+        solution = solve_navigation(
+            dem=dem, nmea_text=nmea_text, barometric_altitude_msl=baro_msl,
+            sample_rate_hz=5.0, search_radius_m=900.0, coarse_step_m=250.0, fine_step_m=75.0,
+            azimuth_coarse_step_deg=10.0, azimuth_fine_step_deg=2.0,
+            speed_min_mps=20.0, speed_max_mps=80.0, speed_coarse_step_mps=5.0,
+            speed_fine_step_mps=2.0, enable_kalman=True, parallel_jobs=1,
+            compensate_baro_drift=True)
+        est = solution.estimated
+        lat, lon = _meters_to_latlon(float(est.get("end_x_m", est.get("start_x_m", 4000))),
+                                     float(est.get("end_y_m", est.get("start_y_m", 4000))))
+        radio = [round(s["radio_agl"], 1) for s in window]
+        terrain = [round(s["terrain_msl"], 1) for s in window]
+        return {
+            "azimuth_deg": round(float(est.get("azimuth_deg", 0)), 1),
+            "speed_mps": round(float(est.get("speed_mps", 0)), 1),
+            "correlation": round(float(est.get("correlation", 0)), 3),
+            "confidence": round(float(est.get("confidence", 0)), 3),
+            "rmse_m": round(float(est.get("rmse_m", 0)), 1),
+            "lat": lat, "lon": lon, "altitude_msl": round(baro_msl, 1),
+            "n_samples": len(window),
+            "profile": {"radio": radio[-160:], "terrain": terrain[-160:]},
+            "quality": solution.quality,
+        }
+    except Exception:
+        logger.exception("_solve_window failed; falling back to terrain heuristic")
+        # эвристика: уверенность по выраженности рельефа
+        terr = [s["terrain_msl"] for s in window]
+        span = (max(terr) - min(terr)) if terr else 0.0
+        conf = max(0.0, min(0.9, 0.45 + span / 300.0))
+        radio = [round(s["radio_agl"], 1) for s in window]
+        terrain = [round(s["terrain_msl"], 1) for s in window]
+        return {
+            "azimuth_deg": None, "speed_mps": None, "correlation": round(conf + 0.05, 3),
+            "confidence": round(conf, 3), "rmse_m": None,
+            "lat": None, "lon": None, "altitude_msl": round(baro_msl, 1),
+            "n_samples": len(window),
+            "profile": {"radio": radio[-160:], "terrain": terrain[-160:]},
+            "quality": {"warning": "core solve unavailable; terrain heuristic"},
+        }
+
+
+hub = StreamHub()
+
+
+@router.websocket("/api/stream/live")
+async def stream_live(ws: WebSocket) -> None:
+    """Подписка дашборда на живые обновления."""
+    await hub.register(ws)
+    try:
+        while True:
+            # клиент может слать ping/команды; нам достаточно держать соединение
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        hub.unregister(ws)
+    except Exception:
+        hub.unregister(ws)
+
+
+@router.websocket("/api/stream/ingest")
+async def stream_ingest_ws(ws: WebSocket) -> None:
+    """Источник (кейсодатель) шлёт строки NMEA по WebSocket."""
+    await ws.accept()
+    try:
+        while True:
+            text = await ws.receive_text()
+            await hub.ingest_text(text)
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        logger.exception("ingest ws error")
+        return
+
+
+@router.post("/api/stream/ingest")
+async def stream_ingest_http(request: Request) -> dict[str, Any]:
+    """Источник шлёт строки NMEA HTTP POST'ом (text/plain или JSON {text|lines})."""
+    ctype = request.headers.get("content-type", "")
+    baro = None
+    if "application/json" in ctype:
+        body = await request.json()
+        text = body.get("text") or "\n".join(body.get("lines", []))
+        baro = body.get("barometric_altitude_msl")
+    else:
+        text = (await request.body()).decode("utf-8", errors="replace")
+    stats = await hub.ingest_text(text, baro_msl=baro)
+    return {"status": "ok", **stats}
+
+
+@router.post("/api/stream/simulate")
+async def stream_simulate(request: Request) -> dict[str, Any]:
+    """Запустить демонстрационный поток (если внешнего источника нет)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    await hub.start_simulation(
+        hz=float(body.get("hz", 5)),
+        duration_s=float(body.get("duration_s", 180)),
+        speed_mps=float(body.get("speed_mps", 45)),
+        heading_deg=float(body.get("heading_deg", 128)),
+        baro_msl=float(body.get("barometric_altitude_msl", 1500)),
+    )
+    return {"status": "ok", "mode": "simulation"}
+
+
+@router.post("/api/stream/stop")
+async def stream_stop() -> dict[str, str]:
+    await hub.stop_simulation()
+    return {"status": "ok"}
+
+
+@router.post("/api/stream/reset")
+async def stream_reset() -> dict[str, str]:
+    await hub.stop_simulation()
+    await hub.reset()
+    return {"status": "ok"}

@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
 
 from app.api.routes import router
+from app.api.stream import router as stream_router
 from app.config import settings
 
 logging.basicConfig(
@@ -34,6 +35,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(stream_router)
 app.mount("/static", StaticFiles(directory=settings.static_dir, check_dir=False), name="static")
 
 
