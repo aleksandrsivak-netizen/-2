@@ -1,0 +1,39 @@
+# ---------------------------------------------------------------------------
+# «Полёт вслепую» — оркестрация для демонстрации и деплоя на Beget VPS/VDS.
+#
+#   nginx  (:80)  ──►  backend (FastAPI :8000)  ──►  app/static + app/api
+#
+# Запуск:   docker compose up -d --build
+# Проверка: http://localhost  ·  http://localhost/health  ·  http://localhost/docs
+# ---------------------------------------------------------------------------
+services:
+  backend:
+    build: ./backend
+    container_name: blind-flight-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Артефакты расчёта (NMEA, result.json, PNG) сохраняются на хосте.
+      - ./backend/app/outputs:/app/app/outputs
+    expose:
+      - "8000"
+    networks:
+      - blind-flight
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: blind-flight-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+    networks:
+      - blind-flight
+
+networks:
+  blind-flight:
+    driver: bridge
