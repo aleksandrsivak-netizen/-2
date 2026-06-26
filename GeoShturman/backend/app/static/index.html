@@ -96,8 +96,12 @@
               <span><b id="fp-lat">—</b> N&nbsp; <b id="fp-lon">—</b> E</span>
               <span>Высота: <b id="fp-alt">—</b> м · Точность: <b id="fp-acc">—</b>%</span>
             </div>
-            <div class="map__ctl" aria-hidden="true">
-              <span>⌖</span><span>⛰</span><span>≋</span><span>＋</span><span>－</span>
+            <div class="map__ctl">
+              <button type="button" id="mapCenter" title="Сбросить вид">⌖</button>
+              <button type="button" id="mapWire" title="Сетка рельефа">⛰</button>
+              <button type="button" id="mapRotate" title="Авто-вращение">≋</button>
+              <button type="button" id="mapZoomIn" title="Приблизить">＋</button>
+              <button type="button" id="mapZoomOut" title="Отдалить">－</button>
             </div>
           </div>
         </section>
@@ -190,40 +194,82 @@
         <button type="button" class="drawer__x" id="drawerClose" aria-label="Закрыть">✕</button>
       </header>
       <div class="drawer__body">
-        <p class="drawer__hint">Вставьте строки <b>NMEA-0183</b> ($GPGGA) от кейсодателя. Данные пройдут
-          фильтрацию (Хампель → Калман) и поступят в навигационное ядро.</p>
+        <div class="tabs" id="drawerTabs">
+          <button type="button" class="tab is-active" data-tab="nmea">NMEA-поток</button>
+          <button type="button" class="tab" data-tab="file">Файл</button>
+          <button type="button" class="tab" data-tab="params">Параметры</button>
+        </div>
 
         <label class="drawer__field">
           <span>Барометрическая высота, м (MSL)</span>
           <input type="number" id="mBaro" value="1500" min="300" max="5000" step="10" />
         </label>
 
-        <label class="drawer__field">
-          <span>NMEA-данные</span>
-          <textarea id="mNmea" rows="12" spellcheck="false"
-            placeholder="$GPGGA,123519.00,,,,,,,,545.4,M,0.0,M,,*47&#10;$GPGGA,123519.20,,,,,,,,547.1,M,0.0,M,,*4A&#10;..."></textarea>
-        </label>
+        <!-- ===== Вкладка: NMEA-поток ===== -->
+        <section class="tabpane is-active" data-pane="nmea">
+          <p class="drawer__hint">Вставьте строки <b>NMEA-0183</b> ($GPGGA). Данные пройдут
+            фильтрацию (Хампель → Калман) и поступят в ядро.</p>
+          <label class="drawer__field">
+            <span>NMEA-данные</span>
+            <textarea id="mNmea" rows="9" spellcheck="false"
+              placeholder="$GPGGA,123519.00,,,,,,,,545.4,M,0.0,M,,*47&#10;$GPGGA,123519.20,,,,,,,,547.1,M,0.0,M,,*4A&#10;..."></textarea>
+          </label>
+          <label class="drawer__field">
+            <span>Скорость подачи</span>
+            <select id="mRate"><option value="10">10 Гц</option><option value="5" selected>5 Гц</option><option value="2">2 Гц</option><option value="1">1 Гц</option></select>
+          </label>
+          <div class="drawer__actions">
+            <button type="button" class="sbtn sbtn--go" id="mPlay">▶ Подать как поток</button>
+            <button type="button" class="sbtn" id="mSolve">⚡ Решить разом</button>
+            <button type="button" class="sbtn sbtn--alt" id="mSample">Пример</button>
+          </div>
+        </section>
 
-        <label class="drawer__field">
-          <span>Скорость подачи (для режима «как поток»)</span>
-          <select id="mRate">
-            <option value="10">10 Гц</option>
-            <option value="5" selected>5 Гц</option>
-            <option value="2">2 Гц</option>
-            <option value="1">1 Гц</option>
-          </select>
-        </label>
+        <!-- ===== Вкладка: Файл ===== -->
+        <section class="tabpane" data-pane="file">
+          <p class="drawer__hint">Загрузите файл с данными от кейсодателя: <b>.nmea / .txt / .log / .csv</b>.</p>
+          <label class="drawer__file" id="fileDrop">
+            <input type="file" id="mFile" accept=".nmea,.txt,.log,.csv,.gga,text/plain" hidden />
+            <span class="drawer__file-ico">⬆</span>
+            <span class="drawer__file-txt" id="fileName">Выберите файл или перетащите сюда</span>
+          </label>
+          <p class="drawer__status" id="fileInfo"></p>
+          <label class="drawer__field">
+            <span>Скорость подачи</span>
+            <select id="fRate"><option value="10">10 Гц</option><option value="5" selected>5 Гц</option><option value="2">2 Гц</option><option value="1">1 Гц</option></select>
+          </label>
+          <div class="drawer__actions">
+            <button type="button" class="sbtn sbtn--go" id="fPlay">▶ Подать как поток</button>
+            <button type="button" class="sbtn" id="fSolve">⚡ Решить разом</button>
+          </div>
+        </section>
 
-        <div class="drawer__actions">
-          <button type="button" class="sbtn sbtn--go" id="mPlay">▶ Подать как поток</button>
-          <button type="button" class="sbtn" id="mSolve">⚡ Решить разом</button>
-          <button type="button" class="sbtn sbtn--alt" id="mSample">Пример данных</button>
-        </div>
+        <!-- ===== Вкладка: Параметры (ручной ввод координат и данных) ===== -->
+        <section class="tabpane" data-pane="params">
+          <p class="drawer__hint">Задайте координаты старта и параметры полёта вручную — система
+            сгенерирует трек, прогонит через фильтры и ядро.</p>
+          <div class="drawer__grid">
+            <label class="drawer__field"><span>Старт X, м</span><input type="number" id="pX" value="4000" min="0" max="20000" step="50" /></label>
+            <label class="drawer__field"><span>Старт Y, м</span><input type="number" id="pY" value="4000" min="0" max="20000" step="50" /></label>
+            <label class="drawer__field"><span>Азимут, °</span><input type="number" id="pAz" value="128" min="0" max="359" /></label>
+            <label class="drawer__field"><span>Скорость, м/с</span><input type="number" id="pSpd" value="45" min="10" max="100" /></label>
+            <label class="drawer__field"><span>Длительность, с</span><input type="number" id="pDur" value="180" min="20" max="600" step="10" /></label>
+            <label class="drawer__field"><span>Частота, Гц</span><input type="number" id="pHz" value="5" min="1" max="10" /></label>
+            <label class="drawer__field"><span>Разрешение DEM, м</span><input type="number" id="pRes" value="30" min="10" max="100" step="5" /></label>
+            <label class="drawer__field"><span>Размер карты, м</span><input type="number" id="pSize" value="8000" min="1000" max="20000" step="500" /></label>
+            <label class="drawer__field"><span>Радиус поиска, м</span><input type="number" id="pSearch" value="2000" min="500" max="5000" step="100" /></label>
+            <label class="drawer__field"><span>Рельеф</span><select id="pTerrain"><option value="mixed" selected>Смешанный</option><option value="mountains">Горы</option><option value="hills">Холмы</option><option value="plains">Равнина</option></select></label>
+          </div>
+          <div class="drawer__actions">
+            <button type="button" class="sbtn sbtn--go" id="pPlay">▶ Запустить поток</button>
+            <button type="button" class="sbtn" id="pSolve">⚡ Полный расчёт</button>
+          </div>
+        </section>
+
         <p class="drawer__status" id="mStatus"></p>
-
         <div class="drawer__divider"></div>
         <p class="drawer__hint drawer__hint--dim">Источник кейсодателя может также слать поток напрямую на
-          <code>POST /api/stream/ingest</code> или WebSocket <code>/api/stream/ingest</code> — дашборд обновляется в реальном времени.</p>
+          <code>POST /api/stream/ingest</code> или WebSocket <code>/api/stream/ingest</code>.</p>
       </div>
     </aside>
   </div>

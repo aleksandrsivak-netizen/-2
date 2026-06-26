@@ -168,11 +168,15 @@ canvas { display: block; }
 }
 .map__hud-t { font-family: var(--ui); font-size: 9px; letter-spacing: 1.5px; color: var(--cyan); }
 .map__hud b { color: var(--text); }
-.map__ctl { position: absolute; top: 12px; right: 12px; display: flex; flex-direction: column; gap: 6px; }
-.map__ctl span {
+.map__ctl { position: absolute; top: 12px; right: 12px; display: flex; flex-direction: column; gap: 6px; z-index: 5; }
+.map__ctl button {
   width: 30px; height: 30px; display: grid; place-items: center; border-radius: 7px; font-size: 14px;
   background: #0a1620cc; border: 1px solid var(--line); color: var(--muted); backdrop-filter: blur(3px);
+  cursor: pointer; transition: .15s; padding: 0;
 }
+.map__ctl button:hover { color: #fff; border-color: var(--green); background: #0e2030cc; }
+.map__ctl button:active { transform: scale(.92); }
+.map__ctl button.is-on { color: var(--green); border-color: var(--green); }
 
 /* ------------------------- Центр: нижний ряд -------------------------- */
 .row3 { display: grid; grid-template-columns: 1fr 1fr 1.25fr; gap: 10px; height: 210px; flex-shrink: 0; }
@@ -334,3 +338,24 @@ canvas { display: block; }
 .drawer__status { margin: 0; font-size: 12px; min-height: 16px; color: #34d399; }
 .drawer__status.err { color: #f43f5e; }
 .drawer__divider { height: 1px; background: #16222f; margin: 4px 0; }
+
+/* вкладки drawer */
+.tabs { display: flex; gap: 4px; background: #0a121c; border: 1px solid #1d2c3f; border-radius: 9px; padding: 3px; }
+.tab { flex: 1; font-size: 12px; font-weight: 600; padding: 8px 6px; border: 0; border-radius: 6px;
+       background: transparent; color: #7f93a6; cursor: pointer; transition: .15s; }
+.tab:hover { color: #cdd9e6; }
+.tab.is-active { background: #1b3a4a; color: #34d399; }
+.tabpane { display: none; flex-direction: column; gap: 14px; }
+.tabpane.is-active { display: flex; }
+
+/* зона выбора файла */
+.drawer__file { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px 16px;
+  border: 1.5px dashed #25446b; border-radius: 12px; background: #0a121c; cursor: pointer; text-align: center;
+  transition: .15s; }
+.drawer__file:hover, .drawer__file.drag { border-color: #34d399; background: #0c1a22; }
+.drawer__file-ico { font-size: 26px; color: #34d399; }
+.drawer__file-txt { font-size: 12.5px; color: #8da3ba; }
+
+/* сетка параметров */
+.drawer__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.drawer__grid .drawer__field span { font-size: 10.5px; }

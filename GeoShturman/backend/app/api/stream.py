@@ -181,13 +181,18 @@ class StreamHub:
 
     # ------------------------- симулятор -------------------------
     async def start_simulation(self, *, hz: float, duration_s: float, speed_mps: float,
-                               heading_deg: float, baro_msl: float) -> None:
+                               heading_deg: float, baro_msl: float,
+                               start_x_m: float = 4000.0, start_y_m: float = 4000.0,
+                               width_m: float = 8000.0, height_m: float = 8000.0,
+                               resolution_m: float = 30.0, terrain_type: str = "mixed") -> None:
         await self.stop_simulation()
         await self.reset()
         self.baro_msl = float(baro_msl)
         self.sim_task = asyncio.create_task(
             self._simulate(hz=hz, duration_s=duration_s, speed_mps=speed_mps,
-                           heading_deg=heading_deg, baro_msl=baro_msl)
+                           heading_deg=heading_deg, baro_msl=baro_msl,
+                           start_x_m=start_x_m, start_y_m=start_y_m, width_m=width_m,
+                           height_m=height_m, resolution_m=resolution_m, terrain_type=terrain_type)
         )
 
     async def stop_simulation(self) -> None:
@@ -200,17 +205,20 @@ class StreamHub:
         self.sim_task = None
 
     async def _simulate(self, *, hz: float, duration_s: float, speed_mps: float,
-                        heading_deg: float, baro_msl: float) -> None:
+                        heading_deg: float, baro_msl: float,
+                        start_x_m: float = 4000.0, start_y_m: float = 4000.0,
+                        width_m: float = 8000.0, height_m: float = 8000.0,
+                        resolution_m: float = 30.0, terrain_type: str = "mixed") -> None:
         from app.core.dem import create_synthetic_dem
         from app.core.nmea import build_gpgga_sentence
         from app.core.simulator import generate_sensor_stream, generate_truth_trajectory
 
         loop = asyncio.get_running_loop()
         dem = await loop.run_in_executor(None, lambda: create_synthetic_dem(
-            width_m=8000, height_m=8000, resolution_m=30, seed=42,
-            terrain_type="mixed", origin_lat_deg=ORIGIN_LAT, origin_lon_deg=ORIGIN_LON))
+            width_m=width_m, height_m=height_m, resolution_m=resolution_m, seed=42,
+            terrain_type=terrain_type, origin_lat_deg=ORIGIN_LAT, origin_lon_deg=ORIGIN_LON))
         truth = generate_truth_trajectory(
-            start_x_m=4000, start_y_m=4000, speed_mps=speed_mps,
+            start_x_m=start_x_m, start_y_m=start_y_m, speed_mps=speed_mps,
             azimuth_deg=heading_deg, duration_s=duration_s, sample_rate_hz=hz)
         stream = generate_sensor_stream(dem=dem, truth_trajectory=truth,
                                         barometric_altitude_msl=baro_msl, seed=7)
@@ -336,6 +344,12 @@ async def stream_simulate(request: Request) -> dict[str, Any]:
         speed_mps=float(body.get("speed_mps", 45)),
         heading_deg=float(body.get("heading_deg", 128)),
         baro_msl=float(body.get("barometric_altitude_msl", 1500)),
+        start_x_m=float(body.get("start_x_m", 4000)),
+        start_y_m=float(body.get("start_y_m", 4000)),
+        width_m=float(body.get("width_m", 8000)),
+        height_m=float(body.get("height_m", body.get("width_m", 8000))),
+        resolution_m=float(body.get("resolution_m", 30)),
+        terrain_type=str(body.get("terrain_type", "mixed")),
     )
     return {"status": "ok", "mode": "simulation"}
 

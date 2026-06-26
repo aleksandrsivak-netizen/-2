@@ -290,7 +290,7 @@
     return `$${body}*${c.toString(16).toUpperCase().padStart(2, "0")}`;
   }
 
-  /* ===================== Выезжающее меню: ручной ввод ===================== */
+  /* ===================== Выезжающее меню: ввод данных ===================== */
   const drawer = $("#drawer"), drawerOvl = $("#drawerOvl");
   const openDrawer = () => { drawer.hidden = false; drawerOvl.hidden = false; };
   const closeDrawer = () => { drawer.hidden = true; drawerOvl.hidden = true; };
@@ -299,33 +299,38 @@
   drawerOvl.addEventListener("click", closeDrawer);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !drawer.hidden) closeDrawer(); });
 
-  const mStatus = (txt, err) => { const e = $("#mStatus"); e.textContent = txt; e.className = "drawer__status" + (err ? " err" : ""); };
-  const readLines = () => $("#mNmea").value.split(/\r?\n/).map((s) => s.trim()).filter((s) => s.startsWith("$"));
-  const ggaAlt = (line) => { const f = line.split("*")[0].split(","); return f.length > 9 ? parseFloat(f[9]) : NaN; };
+  // переключение вкладок
+  document.querySelectorAll("#drawerTabs .tab").forEach((t) => t.addEventListener("click", () => {
+    document.querySelectorAll("#drawerTabs .tab").forEach((x) => x.classList.remove("is-active"));
+    t.classList.add("is-active");
+    document.querySelectorAll(".tabpane").forEach((p) => p.classList.toggle("is-active", p.dataset.pane === t.dataset.tab));
+  }));
 
-  // Пример данных (синтетический трек)
-  $("#mSample").addEventListener("click", () => {
-    const baro = +$("#mBaro").value || 1500, n = 160, hz = 5, noise = mkNoise(909), d = { heading_deg: 128, speed_mps: 42 };
-    const lines = [];
+  const mStatus = (txt, err) => { const e = $("#mStatus"); e.textContent = txt; e.className = "drawer__status" + (err ? " err" : ""); };
+  const baroVal = () => +$("#mBaro").value || 1500;
+  const parseLines = (text) => (text || "").split(/\r?\n/).map((s) => s.trim()).filter((s) => s.startsWith("$"));
+  const ggaAlt = (line) => { const f = line.split("*")[0].split(","); return f.length > 9 ? parseFloat(f[9]) : NaN; };
+  const genTrack = (baro, n, hz, heading, speed, seed) => {
+    const noise = mkNoise(seed || 909), lines = [];
     for (let i = 0; i < n; i++) {
       const t = i / hz;
-      const u = Math.sin(d.heading_deg * Math.PI / 180) * d.speed_mps * t / 8000;
-      const v = -Math.cos(d.heading_deg * Math.PI / 180) * d.speed_mps * t / 8000;
+      const u = Math.sin(heading * Math.PI / 180) * speed * t / 8000;
+      const v = -Math.cos(heading * Math.PI / 180) * speed * t / 8000;
       const terr = 1300 + noise(u * 6, v * 6) * 220;
       let radio = Math.max(0, baro - terr + (Math.random() - 0.5) * 4);
-      if (Math.random() < 0.02) radio += (Math.random() - 0.5) * 90; // редкие выбросы
+      if (Math.random() < 0.02) radio += (Math.random() - 0.5) * 90;
       lines.push(ggaLine(t, radio));
     }
-    $("#mNmea").value = lines.join("\n");
-    mStatus(`Сгенерировано ${n} строк (с выбросами для проверки фильтра).`);
-  });
+    return lines;
+  };
 
-  // Подать вручную введённые данные «как поток»
   let manualTimer = null;
-  $("#mPlay").addEventListener("click", async () => {
-    const lines = readLines(); const baro = +$("#mBaro").value || 1500; const hz = +$("#mRate").value || 5;
+  function stopManual() { if (manualTimer) { clearInterval(manualTimer); manualTimer = null; } }
+
+  // Подать набор строк «как поток» (онлайн → бэк; офлайн → локально)
+  async function feedAsStream(lines, baro, hz) {
     if (!lines.length) { mStatus("Нет валидных строк NMEA ($GPGGA…).", true); return; }
-    if (manualTimer) { clearInterval(manualTimer); manualTimer = null; }
+    stopManual(); stopFallback();
     mStatus(`Подача ${lines.length} строк на ${hz} Гц…`);
     closeDrawer();
     if (state.connected) {
@@ -335,21 +340,19 @@
         handleMessage({ type: "stream_start", source: "external" });
         let i = 0;
         manualTimer = setInterval(async () => {
-          if (i >= lines.length) { clearInterval(manualTimer); manualTimer = null; mStatus("Поток завершён."); return; }
+          if (i >= lines.length) { stopManual(); mStatus("Поток завершён."); return; }
           try { await fetch("/api/stream/ingest", { method: "POST", headers: { "Content-Type": "text/plain" }, body: lines[i] }); } catch {}
           i++;
         }, 1000 / hz);
         return;
       } catch { /* упадём в локальный режим */ }
     }
-    // офлайн: локальная подача
-    stopFallback(); handleMessage({ type: "reset" });
-    $("#m-source").textContent = "РУЧНОЙ ВВОД"; setStreamState("РУЧНОЙ", true);
+    handleMessage({ type: "reset" });
+    $("#m-source").textContent = "ВНЕШНИЕ ДАННЫЕ"; setStreamState("РУЧНОЙ", true);
     let i = 0, win = [], outl = 0;
     manualTimer = setInterval(() => {
-      if (i >= lines.length) { clearInterval(manualTimer); manualTimer = null; setStreamState("ЗАВЕРШЁН", false); return; }
+      if (i >= lines.length) { stopManual(); setStreamState("ЗАВЕРШЁН", false); return; }
       let radio = ggaAlt(lines[i]); if (isNaN(radio)) { i++; return; }
-      // клиентский Хампель
       win.push(radio); if (win.length > 7) win.shift();
       if (win.length >= 5) { const s = [...win].sort((a, b) => a - b), med = s[s.length >> 1];
         const mad = [...win].map((x) => Math.abs(x - med)).sort((a, b) => a - b)[win.length >> 1] * 1.4826;
@@ -365,11 +368,11 @@
       }
       i++;
     }, 1000 / hz);
-  });
+  }
 
-  // Решить разом (одним запросом к ядру)
-  $("#mSolve").addEventListener("click", async () => {
-    const lines = readLines(); const baro = +$("#mBaro").value || 1500;
+  // Решить разом одним запросом к ядру
+  async function solveOnce(text, baro) {
+    const lines = parseLines(text);
     if (!lines.length) { mStatus("Нет валидных строк NMEA.", true); return; }
     mStatus("Расчёт ядром…");
     try {
@@ -379,12 +382,86 @@
       const data = await r.json();
       const est = data.estimated || {};
       applySolution({ azimuth_deg: est.azimuth_deg, speed_mps: est.speed_mps, correlation: est.correlation,
-        confidence: est.confidence, altitude_msl: baro,
-        lat: data.found_position?.lat, lon: data.found_position?.lon });
+        confidence: est.confidence, altitude_msl: baro, lat: data.found_position?.lat, lon: data.found_position?.lon });
       mStatus(`Готово: азимут ${fmt(est.azimuth_deg, 0)}°, достоверность ${fmt((est.confidence || 0) * 100, 1)}%.`);
       closeDrawer();
-    } catch (e) { mStatus("Ядро недоступно (нужен запущенный бэкенд). Используйте «Подать как поток».", true); }
+    } catch { mStatus("Ядро недоступно (нужен запущенный бэкенд). Используйте «Подать как поток».", true); }
+  }
+
+  /* ----- Вкладка 1: NMEA-текст ----- */
+  $("#mSample").addEventListener("click", () => {
+    $("#mNmea").value = genTrack(baroVal(), 160, 5, 128, 42).join("\n");
+    mStatus("Сгенерировано 160 строк (с выбросами для проверки фильтра).");
   });
+  $("#mPlay").addEventListener("click", () => feedAsStream(parseLines($("#mNmea").value), baroVal(), +$("#mRate").value || 5));
+  $("#mSolve").addEventListener("click", () => solveOnce($("#mNmea").value, baroVal()));
+
+  /* ----- Вкладка 2: Файл ----- */
+  let fileText = "";
+  const fileDrop = $("#fileDrop"), fileInput = $("#mFile");
+  function loadFile(file) {
+    if (!file) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      fileText = String(rd.result || "");
+      const n = parseLines(fileText).length;
+      $("#fileName").textContent = file.name;
+      $("#fileInfo").textContent = `Загружено: ${(file.size / 1024).toFixed(1)} КБ · валидных $GPGGA строк: ${n}`;
+      $("#fileInfo").className = "drawer__status";
+    };
+    rd.readAsText(file);
+  }
+  fileInput.addEventListener("change", (e) => loadFile(e.target.files[0]));
+  ["dragover", "dragenter"].forEach((ev) => fileDrop.addEventListener(ev, (e) => { e.preventDefault(); fileDrop.classList.add("drag"); }));
+  ["dragleave", "drop"].forEach((ev) => fileDrop.addEventListener(ev, (e) => { e.preventDefault(); fileDrop.classList.remove("drag"); }));
+  fileDrop.addEventListener("drop", (e) => loadFile(e.dataTransfer.files[0]));
+  $("#fPlay").addEventListener("click", () => {
+    if (!fileText) { mStatus("Сначала выберите файл.", true); return; }
+    feedAsStream(parseLines(fileText), baroVal(), +$("#fRate").value || 5);
+  });
+  $("#fSolve").addEventListener("click", () => {
+    if (!fileText) { mStatus("Сначала выберите файл.", true); return; }
+    solveOnce(fileText, baroVal());
+  });
+
+  /* ----- Вкладка 3: Параметры (ручной ввод координат и данных) ----- */
+  const pv = (id, def) => { const v = +$("#" + id).value; return isNaN(v) ? def : v; };
+  $("#pPlay").addEventListener("click", async () => {
+    const p = { hz: pv("pHz", 5), duration_s: pv("pDur", 180), speed_mps: pv("pSpd", 45),
+      heading_deg: pv("pAz", 128), barometric_altitude_msl: baroVal(), start_x_m: pv("pX", 4000),
+      start_y_m: pv("pY", 4000), width_m: pv("pSize", 8000), resolution_m: pv("pRes", 30),
+      terrain_type: $("#pTerrain").value };
+    mStatus("Запуск потока по параметрам…"); closeDrawer();
+    if (window.GeoScenes) window.GeoScenes.setAzimuth(p.heading_deg);
+    try { await api("/api/stream/simulate", p); }
+    catch { feedAsStream(genTrack(p.barometric_altitude_msl, Math.round(p.duration_s * p.hz), p.hz, p.heading_deg, p.speed_mps, p.start_x_m), p.barometric_altitude_msl, p.hz); }
+  });
+  $("#pSolve").addEventListener("click", async () => {
+    const body = { width_m: pv("pSize", 8000), height_m: pv("pSize", 8000), resolution_m: pv("pRes", 30),
+      duration_s: pv("pDur", 180), sample_rate_hz: pv("pHz", 5), speed_mps: pv("pSpd", 45),
+      azimuth_deg: pv("pAz", 128), barometric_altitude_msl: baroVal(), search_radius_m: pv("pSearch", 2000),
+      terrain_type: $("#pTerrain").value, enable_kalman: true, seed: 42 };
+    mStatus("Полный расчёт ядром…");
+    try {
+      const r = await fetch("/api/demo/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const d = await r.json(); const est = d.estimated || {};
+      const lat = 56.10 + (est.end_y_m || est.start_y_m || 4000) / 111320;
+      const lon = 37.20 + (est.end_x_m || est.start_x_m || 4000) / (111320 * Math.cos(56.10 * Math.PI / 180));
+      applySolution({ azimuth_deg: est.azimuth_deg, speed_mps: est.speed_mps, correlation: est.correlation,
+        confidence: est.confidence, altitude_msl: baroVal(), lat: +lat.toFixed(4), lon: +lon.toFixed(4) });
+      mStatus(`Готово: азимут ${fmt(est.azimuth_deg, 0)}°, корреляция ${fmt(est.correlation, 3)}.`);
+      closeDrawer();
+    } catch { mStatus("Ядро недоступно (нужен бэкенд). Используйте «Запустить поток».", true); }
+  });
+
+  /* ----- Кнопки управления 3D-картой ----- */
+  const G = () => window.GeoScenes;
+  $("#mapZoomIn") && $("#mapZoomIn").addEventListener("click", () => G() && G().zoom(-1));
+  $("#mapZoomOut") && $("#mapZoomOut").addEventListener("click", () => G() && G().zoom(1));
+  $("#mapCenter") && $("#mapCenter").addEventListener("click", () => G() && G().resetView());
+  $("#mapWire") && $("#mapWire").addEventListener("click", (e) => { if (G()) { G().toggleWire(); e.currentTarget.classList.toggle("is-on"); } });
+  $("#mapRotate") && $("#mapRotate").addEventListener("click", (e) => { if (G()) { G().toggleRotate(); e.currentTarget.classList.toggle("is-on"); } });
 
   /* --------------------------- старт --------------------------- */
   window.addEventListener("resize", () => {

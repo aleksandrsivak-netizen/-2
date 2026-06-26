@@ -45,6 +45,8 @@
       cam.position.set(0, 34, 52);
       cam.lookAt(0, -2, 0);
       this.camera = cam;
+      // орбитальное управление: дистанция (зум), азимут/наклон (вращение)
+      this.camDist = 62; this.camYaw = 0; this.camPitch = 0.62; this.autoRotate = true;
 
       sc.add(new THREE.AmbientLight(0x4a6075, 0.9));
       const dl = new THREE.DirectionalLight(0x9fd8ff, 1.1);
@@ -54,10 +56,33 @@
       this._buildTerrain();
       this._buildTrajectory();
       this._buildCraft();
+      this._attachControls();
       this.resize();
       const loop = () => { this.raf = requestAnimationFrame(loop); this._tick(); };
       loop();
     },
+
+    // --- интерактивное управление картой: вращение мышью, зум колесом ---
+    _attachControls() {
+      const cv = this.canvas;
+      let dragging = false, lx = 0, ly = 0;
+      cv.style.cursor = "grab";
+      cv.addEventListener("pointerdown", (e) => { dragging = true; this.autoRotate = false; lx = e.clientX; ly = e.clientY; cv.style.cursor = "grabbing"; cv.setPointerCapture(e.pointerId); });
+      cv.addEventListener("pointermove", (e) => {
+        if (!dragging) return;
+        this.camYaw -= (e.clientX - lx) * 0.006;
+        this.camPitch = THREE.MathUtils.clamp(this.camPitch + (e.clientY - ly) * 0.005, 0.12, 1.45);
+        lx = e.clientX; ly = e.clientY;
+      });
+      const up = () => { dragging = false; cv.style.cursor = "grab"; };
+      cv.addEventListener("pointerup", up); cv.addEventListener("pointerleave", up);
+      cv.addEventListener("wheel", (e) => { e.preventDefault(); this.zoom(e.deltaY > 0 ? 1 : -1); }, { passive: false });
+    },
+
+    zoom(sign) { this.camDist = THREE.MathUtils.clamp(this.camDist * (sign > 0 ? 1.12 : 0.89), 26, 140); },
+    resetView() { this.camDist = 62; this.camYaw = 0; this.camPitch = 0.62; this.autoRotate = true; },
+    toggleRotate() { this.autoRotate = !this.autoRotate; },
+    toggleWire() { if (this.wireMesh) this.wireMesh.visible = !this.wireMesh.visible; },
 
     _buildTerrain() {
       const SZ = 90, SEG = 120, A = 9;
@@ -84,8 +109,8 @@
       this.scene.add(this.plane);
 
       // тонкая контурная сетка поверх
-      const wire = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x1b4a55, wireframe: true, transparent: true, opacity: 0.12 }));
-      this.scene.add(wire);
+      this.wireMesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x1b4a55, wireframe: true, transparent: true, opacity: 0.12 }));
+      this.scene.add(this.wireMesh);
       this._heightAt = (x, z) => {
         const u = (x / SZ) * 6, v = (z / SZ) * 6;
         const edge = 1 - Math.min(1, (Math.abs(x) + Math.abs(z)) / SZ);
@@ -182,11 +207,12 @@
 
     _tick() {
       this.t += 0.005;
-      // лёгкое орбитальное движение камеры
-      const a = Math.sin(this.t * 0.4) * 0.18;
-      this.camera.position.x = Math.sin(a) * 60;
-      this.camera.position.z = Math.cos(a) * 60;
-      this.camera.position.y = 34 + Math.sin(this.t * 0.5) * 3;
+      if (this.autoRotate) this.camYaw += 0.0016;
+      // камера в сферических координатах вокруг центра (зум + вращение)
+      const d = this.camDist, p = this.camPitch, y = this.camYaw;
+      this.camera.position.x = Math.sin(y) * Math.cos(p) * d;
+      this.camera.position.z = Math.cos(y) * Math.cos(p) * d;
+      this.camera.position.y = Math.sin(p) * d;
       this.camera.lookAt(0, -1, 0);
 
       // самолёт движется вдоль кривой
@@ -319,5 +345,9 @@
     setCraftType: (t) => Terrain.setCraftType(t),
     setCorrPeak: (u, v) => Corr.setPeak(u, v),
     resize: () => { Terrain.resize(); Corr.resize(); },
+    zoom: (s) => Terrain.zoom(s),
+    resetView: () => Terrain.resetView(),
+    toggleRotate: () => Terrain.toggleRotate(),
+    toggleWire: () => Terrain.toggleWire(),
   };
 })();

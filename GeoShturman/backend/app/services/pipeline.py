@@ -702,6 +702,16 @@ def solve_navigation_from_nmea(request: NavigationSolveRequest) -> dict[str, Any
         )
         result["estimated"] = solution.estimated
         result["quality"] = solution.quality
+        # географическая привязка найденной точки (для карты на дашборде)
+        import math as _math
+        _est = solution.estimated
+        _x = float(_est.get("end_x_m", _est.get("start_x_m", 4000.0)))
+        _y = float(_est.get("end_y_m", _est.get("start_y_m", 4000.0)))
+        result["found_position"] = {
+            "lat": round(56.10 + _y / 111_320.0, 6),
+            "lon": round(37.20 + _x / (111_320.0 * _math.cos(_math.radians(56.10))), 6),
+            "altitude_msl": request.barometric_altitude_msl,
+        }
         result["message"] = "Navigation solution calculated by backend/app/core"
     except Exception as exc:
         logger.exception("Core solve from supplied NMEA failed")
