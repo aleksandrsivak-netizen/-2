@@ -48,6 +48,9 @@ class StreamHub:
         self.clients: set[WebSocket] = set()
         self.samples: list[dict[str, Any]] = []   # {t_s, radio_agl, terrain_msl, raw}
         self.baro_msl: float = 1500.0
+        # --- предфильтрация входного потока ---
+        self.raw_window: list[float] = []   # окно сырых значений радиовысоты для Хампеля
+        self.outliers_rejected: int = 0     # сколько выбросов отброшено
         self.started_at: float | None = None
         self.last_solve_at: float = 0.0
         self.solving: bool = False
@@ -79,6 +82,8 @@ class StreamHub:
     # ------------------------- приём данных -------------------------
     async def reset(self) -> None:
         self.samples.clear()
+        self.raw_window.clear()
+        self.outliers_rejected = 0
         self.started_at = None
         self.last_solution = None
         self.last_solve_at = 0.0
@@ -102,10 +107,34 @@ class StreamHub:
         await self._maybe_solve()
         return {"ingested": ingested, "valid": valid, "total_valid": len(self.samples)}
 
+    def _hampel(self, value: float, k: float = 3.0, win: int = 7) -> tuple[float, bool]:
+        """Хампель-фильтр выбросов: робастная медиана + MAD по скользящему окну.
+
+        Возвращает (значение, выброс?). Выброс заменяется медианой окна — чтобы
+        битые строки/скачки радиовысотомера не портили корреляцию и оценку.
+        """
+        self.raw_window.append(value)
+        if len(self.raw_window) > win:
+            self.raw_window = self.raw_window[-win:]
+        if len(self.raw_window) < 5:
+            return value, False
+        import numpy as _np
+        arr = _np.asarray(self.raw_window, dtype=float)
+        med = float(_np.median(arr))
+        mad = float(_np.median(_np.abs(arr - med))) * 1.4826
+        if mad <= 1e-6:
+            return value, False
+        if abs(value - med) > k * mad:
+            return med, True   # выброс → подменяем робастной медианой
+        return value, False
+
     async def _add_sample(self, m: dict[str, Any]) -> None:
         if self.started_at is None:
             self.started_at = time.monotonic()
-        radio = float(m["radio_altitude_agl_m"])
+        raw_radio = float(m["radio_altitude_agl_m"])
+        radio, is_outlier = self._hampel(raw_radio)
+        if is_outlier:
+            self.outliers_rejected += 1
         terrain = self.baro_msl - radio
         t_s = m.get("timestamp_s")
         sample = {"t_s": t_s, "radio_agl": radio, "terrain_msl": terrain, "raw": m["raw"]}
@@ -122,6 +151,9 @@ class StreamHub:
             "baro_msl": round(self.baro_msl, 1),
             "elapsed_s": round(elapsed, 1),
             "raw": m["raw"],
+            "outliers_rejected": self.outliers_rejected,
+            "is_outlier": is_outlier,
+            "filters": {"hampel": True, "kalman": True, "particle": len(self.samples) >= MIN_SAMPLES_TO_SOLVE},
         })
 
     async def _maybe_solve(self) -> None:

@@ -35,6 +35,7 @@
         <button type="button" class="sbtn sbtn--go" id="btnStart">▶ Старт</button>
         <button type="button" class="sbtn" id="btnStop">⏸ Стоп</button>
         <button type="button" class="sbtn" id="btnReset">⟳ Сброс</button>
+        <button type="button" class="sbtn sbtn--alt" id="btnManual">⌨ Ввод данных</button>
       </div>
 
       <div class="hdr__time">
@@ -119,15 +120,15 @@
           </section>
 
           <section class="card card--sys">
-            <header class="card__head"><h2 class="card__t">Состояние систем</h2></header>
+            <header class="card__head"><h2 class="card__t">Фильтры и системы</h2></header>
             <ul class="sys">
               <li><i class="sys__i sys__i--radio"></i><span>РАДИОВЫСОТОМЕР</span><b class="ok">OK</b></li>
-              <li><i class="sys__i sys__i--ins"></i><span>ИНС</span><b class="ok">OK</b></li>
-              <li><i class="sys__i sys__i--baro"></i><span>БАРОМЕТР</span><b class="ok">OK</b></li>
               <li><i class="sys__i sys__i--dem"></i><span>DEM ПОКРЫТИЕ</span><b class="ok">OK</b></li>
+              <li><i class="sys__i sys__i--filter"></i><span>ХАМПЕЛЬ · ВЫБРОСЫ</span><b class="green" id="fOutliers">0</b></li>
               <li><i class="sys__i sys__i--kalman"></i><span>КАЛМАН-ФИЛЬТР</span><b class="ok" id="kalmanState">АКТИВЕН</b></li>
+              <li><i class="sys__i sys__i--pf"></i><span>ПАРТИКЛФИЛЬТР</span><b class="ok" id="fPF">ОЖИДАНИЕ</b></li>
+              <li><i class="sys__i sys__i--ins"></i><span>ИНС · СЧИСЛЕНИЕ</span><b class="ok">OK</b></li>
               <li><i class="sys__i sys__i--cpu"></i><span>ПОТОК</span><b class="green" id="sysStream">—</b></li>
-              <li><i class="sys__i sys__i--temp"></i><span>РЕШАТЕЛЬ ЯДРА</span><b class="green" id="sysSolver">ОЖИДАНИЕ</b></li>
               <li class="sys__gauge"><canvas id="loadGauge" width="56" height="56"></canvas><span id="loadPct">0%</span></li>
             </ul>
           </section>
@@ -180,6 +181,51 @@
         </div>
       </section>
     </footer>
+
+    <!-- ============== ВЫЕЗЖАЮЩЕЕ МЕНЮ: РУЧНОЙ ВВОД ДАННЫХ ============== -->
+    <div class="drawer-ovl" id="drawerOvl" hidden></div>
+    <aside class="drawer" id="drawer" hidden aria-label="Ручной ввод данных">
+      <header class="drawer__head">
+        <h2>Ввод данных заказчика</h2>
+        <button type="button" class="drawer__x" id="drawerClose" aria-label="Закрыть">✕</button>
+      </header>
+      <div class="drawer__body">
+        <p class="drawer__hint">Вставьте строки <b>NMEA-0183</b> ($GPGGA) от кейсодателя. Данные пройдут
+          фильтрацию (Хампель → Калман) и поступят в навигационное ядро.</p>
+
+        <label class="drawer__field">
+          <span>Барометрическая высота, м (MSL)</span>
+          <input type="number" id="mBaro" value="1500" min="300" max="5000" step="10" />
+        </label>
+
+        <label class="drawer__field">
+          <span>NMEA-данные</span>
+          <textarea id="mNmea" rows="12" spellcheck="false"
+            placeholder="$GPGGA,123519.00,,,,,,,,545.4,M,0.0,M,,*47&#10;$GPGGA,123519.20,,,,,,,,547.1,M,0.0,M,,*4A&#10;..."></textarea>
+        </label>
+
+        <label class="drawer__field">
+          <span>Скорость подачи (для режима «как поток»)</span>
+          <select id="mRate">
+            <option value="10">10 Гц</option>
+            <option value="5" selected>5 Гц</option>
+            <option value="2">2 Гц</option>
+            <option value="1">1 Гц</option>
+          </select>
+        </label>
+
+        <div class="drawer__actions">
+          <button type="button" class="sbtn sbtn--go" id="mPlay">▶ Подать как поток</button>
+          <button type="button" class="sbtn" id="mSolve">⚡ Решить разом</button>
+          <button type="button" class="sbtn sbtn--alt" id="mSample">Пример данных</button>
+        </div>
+        <p class="drawer__status" id="mStatus"></p>
+
+        <div class="drawer__divider"></div>
+        <p class="drawer__hint drawer__hint--dim">Источник кейсодателя может также слать поток напрямую на
+          <code>POST /api/stream/ingest</code> или WebSocket <code>/api/stream/ingest</code> — дашборд обновляется в реальном времени.</p>
+      </div>
+    </aside>
   </div>
 
   <script src="/static/vendor/three.min.js"></script>

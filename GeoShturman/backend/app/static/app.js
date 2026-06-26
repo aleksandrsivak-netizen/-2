@@ -128,9 +128,10 @@
     li.innerHTML = `<time>${nowHMS()}</time><span>${text}</span>`;
     msgs.prepend(li); while (msgs.children.length > 14) msgs.lastChild.remove();
   }
-  function pushNmea(raw) {
+  function pushNmea(raw, outlier) {
     if (!raw) return;
-    const li = document.createElement("li"); li.textContent = raw;
+    const li = document.createElement("li"); li.textContent = (outlier ? "⚠ " : "") + raw;
+    if (outlier) li.style.color = "#fbbf24";
     nmeaLog.append(li); while (nmeaLog.children.length > 7) nmeaLog.firstChild.remove();
   }
 
@@ -154,7 +155,9 @@
     const s = Math.round(m.elapsed_s || 0);
     $("#m-time").textContent = `${pad2(Math.floor(s / 3600))}:${pad2(Math.floor(s / 60) % 60)}:${pad2(s % 60)}`;
     drawSpark(state.radio); drawProfile(state.radio, state.terrain);
-    pushNmea(m.raw);
+    pushNmea(m.raw, m.is_outlier);
+    if (m.outliers_rejected != null) $("#fOutliers").textContent = m.outliers_rejected;
+    if (m.filters) { const pf = $("#fPF"); pf.textContent = m.filters.particle ? "АКТИВЕН" : "НАКОПЛЕНИЕ"; pf.className = m.filters.particle ? "ok" : "muted"; }
     const lp = clamp(20 + (m.n_valid % 60), 0, 99);
     $("#loadPct").textContent = lp + "%"; drawGauge("#loadGauge", lp);
   }
@@ -286,6 +289,102 @@
     let c = 0; for (let i = 0; i < body.length; i++) c ^= body.charCodeAt(i);
     return `$${body}*${c.toString(16).toUpperCase().padStart(2, "0")}`;
   }
+
+  /* ===================== Выезжающее меню: ручной ввод ===================== */
+  const drawer = $("#drawer"), drawerOvl = $("#drawerOvl");
+  const openDrawer = () => { drawer.hidden = false; drawerOvl.hidden = false; };
+  const closeDrawer = () => { drawer.hidden = true; drawerOvl.hidden = true; };
+  $("#btnManual").addEventListener("click", openDrawer);
+  $("#drawerClose").addEventListener("click", closeDrawer);
+  drawerOvl.addEventListener("click", closeDrawer);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !drawer.hidden) closeDrawer(); });
+
+  const mStatus = (txt, err) => { const e = $("#mStatus"); e.textContent = txt; e.className = "drawer__status" + (err ? " err" : ""); };
+  const readLines = () => $("#mNmea").value.split(/\r?\n/).map((s) => s.trim()).filter((s) => s.startsWith("$"));
+  const ggaAlt = (line) => { const f = line.split("*")[0].split(","); return f.length > 9 ? parseFloat(f[9]) : NaN; };
+
+  // Пример данных (синтетический трек)
+  $("#mSample").addEventListener("click", () => {
+    const baro = +$("#mBaro").value || 1500, n = 160, hz = 5, noise = mkNoise(909), d = { heading_deg: 128, speed_mps: 42 };
+    const lines = [];
+    for (let i = 0; i < n; i++) {
+      const t = i / hz;
+      const u = Math.sin(d.heading_deg * Math.PI / 180) * d.speed_mps * t / 8000;
+      const v = -Math.cos(d.heading_deg * Math.PI / 180) * d.speed_mps * t / 8000;
+      const terr = 1300 + noise(u * 6, v * 6) * 220;
+      let radio = Math.max(0, baro - terr + (Math.random() - 0.5) * 4);
+      if (Math.random() < 0.02) radio += (Math.random() - 0.5) * 90; // редкие выбросы
+      lines.push(ggaLine(t, radio));
+    }
+    $("#mNmea").value = lines.join("\n");
+    mStatus(`Сгенерировано ${n} строк (с выбросами для проверки фильтра).`);
+  });
+
+  // Подать вручную введённые данные «как поток»
+  let manualTimer = null;
+  $("#mPlay").addEventListener("click", async () => {
+    const lines = readLines(); const baro = +$("#mBaro").value || 1500; const hz = +$("#mRate").value || 5;
+    if (!lines.length) { mStatus("Нет валидных строк NMEA ($GPGGA…).", true); return; }
+    if (manualTimer) { clearInterval(manualTimer); manualTimer = null; }
+    mStatus(`Подача ${lines.length} строк на ${hz} Гц…`);
+    closeDrawer();
+    if (state.connected) {
+      try {
+        await api("/api/stream/reset");
+        await api("/api/stream/ingest", { text: "", barometric_altitude_msl: baro }).catch(() => {});
+        handleMessage({ type: "stream_start", source: "external" });
+        let i = 0;
+        manualTimer = setInterval(async () => {
+          if (i >= lines.length) { clearInterval(manualTimer); manualTimer = null; mStatus("Поток завершён."); return; }
+          try { await fetch("/api/stream/ingest", { method: "POST", headers: { "Content-Type": "text/plain" }, body: lines[i] }); } catch {}
+          i++;
+        }, 1000 / hz);
+        return;
+      } catch { /* упадём в локальный режим */ }
+    }
+    // офлайн: локальная подача
+    stopFallback(); handleMessage({ type: "reset" });
+    $("#m-source").textContent = "РУЧНОЙ ВВОД"; setStreamState("РУЧНОЙ", true);
+    let i = 0, win = [], outl = 0;
+    manualTimer = setInterval(() => {
+      if (i >= lines.length) { clearInterval(manualTimer); manualTimer = null; setStreamState("ЗАВЕРШЁН", false); return; }
+      let radio = ggaAlt(lines[i]); if (isNaN(radio)) { i++; return; }
+      // клиентский Хампель
+      win.push(radio); if (win.length > 7) win.shift();
+      if (win.length >= 5) { const s = [...win].sort((a, b) => a - b), med = s[s.length >> 1];
+        const mad = [...win].map((x) => Math.abs(x - med)).sort((a, b) => a - b)[win.length >> 1] * 1.4826;
+        if (mad > 1e-6 && Math.abs(radio - med) > 3 * mad) { radio = med; outl++; } }
+      handleMessage({ type: "telemetry", n_valid: i + 1, radio_agl: +radio.toFixed(1),
+        terrain_msl: +(baro - radio).toFixed(1), baro_msl: baro, elapsed_s: +(i / hz).toFixed(1),
+        raw: lines[i], outliers_rejected: outl, is_outlier: false, filters: { particle: i >= 16 } });
+      if (i % 14 === 13) {
+        const terr = state.terrain.slice(-160), span = Math.max(...terr) - Math.min(...terr);
+        const conf = clamp(0.5 + span / 400, 0, 0.95);
+        handleMessage({ type: "solution", correlation: +(conf + 0.05).toFixed(3), confidence: +conf.toFixed(3),
+          altitude_msl: baro, profile: { radio: state.radio.slice(-160), terrain: terr } });
+      }
+      i++;
+    }, 1000 / hz);
+  });
+
+  // Решить разом (одним запросом к ядру)
+  $("#mSolve").addEventListener("click", async () => {
+    const lines = readLines(); const baro = +$("#mBaro").value || 1500;
+    if (!lines.length) { mStatus("Нет валидных строк NMEA.", true); return; }
+    mStatus("Расчёт ядром…");
+    try {
+      const r = await fetch("/api/navigation/solve", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nmea_text: lines.join("\n"), barometric_altitude_msl: baro }) });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      const est = data.estimated || {};
+      applySolution({ azimuth_deg: est.azimuth_deg, speed_mps: est.speed_mps, correlation: est.correlation,
+        confidence: est.confidence, altitude_msl: baro,
+        lat: data.found_position?.lat, lon: data.found_position?.lon });
+      mStatus(`Готово: азимут ${fmt(est.azimuth_deg, 0)}°, достоверность ${fmt((est.confidence || 0) * 100, 1)}%.`);
+      closeDrawer();
+    } catch (e) { mStatus("Ядро недоступно (нужен запущенный бэкенд). Используйте «Подать как поток».", true); }
+  });
 
   /* --------------------------- старт --------------------------- */
   window.addEventListener("resize", () => {
