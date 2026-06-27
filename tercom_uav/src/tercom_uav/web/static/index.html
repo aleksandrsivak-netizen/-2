@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TERCOM UAV Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <header class="brand">
+          <div>
+            <span class="eyebrow">Terrain-referenced navigation</span>
+            <h1>TERCOM UAV</h1>
+            <p>Навигация БПЛА по DEM и радиовысотомеру</p>
+          </div>
+          <span id="serverStatus" class="status-dot" title="Статус сервера"></span>
+        </header>
+
+        <section class="guide-panel">
+          <h2>Логика пайплайна</h2>
+          <p>
+            GPGGA используется как контейнер радиовысоты AGL. Профиль рельефа
+            восстанавливается как <strong>baro MSL − radio AGL</strong>, затем
+            сопоставляется с DEM по азимуту и сдвигу.
+          </p>
+          <div class="process-list">
+            <span>Карта</span>
+            <span>NMEA</span>
+            <span>Профиль</span>
+            <span>Корреляция</span>
+          </div>
+        </section>
+
+        <section class="control-panel">
+          <div class="section-title">
+            <div>
+              <h2>Сценарий</h2>
+              <p id="modeHelp">
+                Демо создаёт истинную траекторию, радиовысотомерный NMEA-поток и сразу запускает локализацию.
+              </p>
+            </div>
+          </div>
+
+          <div class="segmented" role="tablist" aria-label="Режим запуска">
+            <button class="mode-button active" type="button" data-mode="demo">Демо</button>
+            <button class="mode-button" type="button" data-mode="localize">Локализация</button>
+          </div>
+
+          <form id="runForm" class="form-grid">
+            <label class="full-row">
+              <span>Карта высот</span>
+              <div class="inline-control">
+                <select id="mapSelect" name="mapId"></select>
+                <button id="refreshMapsButton" class="icon-button" type="button" title="Обновить список карт">↻</button>
+              </div>
+            </label>
+            <p id="mapDescription" class="field-note full-row">Загружаю доступные карты...</p>
+
+            <label class="full-row">
+              <span>Ручной путь к GeoTIFF/VRT</span>
+              <input name="demPath" type="text" placeholder="/path/to/dem.tif" />
+            </label>
+            <label id="nmeaPathGroup" class="hidden full-row">
+              <span>NMEA-файл GPGGA</span>
+              <input name="nmeaPath" type="text" placeholder="/path/to/input.nmea" />
+            </label>
+            <label id="truthPathGroup" class="hidden full-row">
+              <span>Truth CSV для сравнения</span>
+              <input name="truthPath" type="text" placeholder="необязательно: /path/to/truth.csv" />
+            </label>
+
+            <label>
+              <span>Баровысота, м MSL</span>
+              <input name="baroAlt" type="number" value="1500" step="10" />
+            </label>
+            <label>
+              <span>Скорость, м/с</span>
+              <input name="speed" type="number" value="55" step="1" min="1" />
+            </label>
+            <label id="headingGroup">
+              <span>Курс, градусы</span>
+              <input name="heading" type="number" value="73" step="1" min="0" max="359" />
+            </label>
+            <label id="durationGroup">
+              <span>Длительность, с</span>
+              <input name="duration" type="number" value="180" step="10" min="5" />
+            </label>
+            <label id="hzGroup">
+              <span>Частота NMEA, Гц</span>
+              <input name="hz" type="number" value="5" step="1" min="1" max="10" />
+            </label>
+            <label id="noiseGroup">
+              <span>Шум, м</span>
+              <input name="noiseStd" type="number" value="2.5" step="0.1" min="0" />
+            </label>
+            <label id="outlierGroup">
+              <span>Выбросы</span>
+              <input name="outlierProb" type="number" value="0" step="0.01" min="0" max="1" />
+            </label>
+            <label id="dropoutGroup">
+              <span>Пропуски</span>
+              <input name="dropoutProb" type="number" value="0" step="0.01" min="0" max="1" />
+            </label>
+            <label id="driftGroup">
+              <span>Дрейф, м/с</span>
+              <input name="driftMps" type="number" value="0" step="0.01" />
+            </label>
+            <label>
+              <span>Шаг сдвига, м</span>
+              <input name="shiftStep" type="number" value="30" step="10" min="5" />
+            </label>
+            <label id="seedGroup">
+              <span>Seed шума</span>
+              <input name="randomSeed" type="number" value="42" step="1" />
+            </label>
+          </form>
+
+          <div class="toggle-grid">
+            <label class="toggle-row">
+              <input name="strictMode" type="checkbox" checked />
+              <span>Строгий режим ТЗ: 0–360° с шагом 1°</span>
+            </label>
+            <label class="toggle-row">
+              <input name="useKalman" type="checkbox" />
+              <span>Сглаживание alpha-beta</span>
+            </label>
+            <label class="toggle-row">
+              <input name="coarseToFine" type="checkbox" />
+              <span>Coarse-to-fine поиск</span>
+            </label>
+          </div>
+
+          <div class="run-bar">
+            <p id="runMessage" class="run-message">Готово к запуску</p>
+            <button id="runButton" class="primary-button" type="button">Запустить</button>
+          </div>
+        </section>
+
+        <section class="route-panel">
+          <div class="section-title">
+            <div>
+              <h2>Планирование маршрута</h2>
+              <p>
+                Создаёт маршрут БПЛА по DEM, truth.csv, NMEA и затем запускает TERCOM без GNSS.
+              </p>
+            </div>
+          </div>
+
+          <div class="segmented route-mode-tabs" role="tablist" aria-label="Режим маршрута">
+            <button class="route-mode-button active" type="button" data-route-mode="simple">Простой</button>
+            <button class="route-mode-button" type="button" data-route-mode="waypoints">Точки</button>
+            <button class="route-mode-button" type="button" data-route-mode="automatic">Авто</button>
+          </div>
+
+          <form id="routeForm" class="form-grid">
+            <label class="full-row">
+              <span>Баровысота маршрута, м MSL</span>
+              <input name="routeBaroAlt" type="number" value="1500" step="10" />
+            </label>
+
+            <div class="route-fields full-row" data-route-fields="simple">
+              <div class="form-grid">
+                <label>
+                  <span>Старт X, м</span>
+                  <input name="routeSimpleX0" type="number" value="-2500" step="50" />
+                </label>
+                <label>
+                  <span>Старт Y, м</span>
+                  <input name="routeSimpleY0" type="number" value="-2500" step="50" />
+                </label>
+                <label>
+                  <span>Курс, градусы</span>
+                  <input name="routeSimpleHeading" type="number" value="73" min="0" max="359" step="1" />
+                </label>
+                <label>
+                  <span>Скорость, м/с</span>
+                  <input name="routeSimpleSpeed" type="number" value="45" min="1" step="1" />
+                </label>
+                <label>
+                  <span>Длительность, с</span>
+                  <input name="routeSimpleDuration" type="number" value="120" min="5" step="5" />
+                </label>
+                <label>
+                  <span>Частота truth, Гц</span>
+                  <input name="routeSimpleHz" type="number" value="5" min="1" max="10" step="1" />
+                </label>
+              </div>
+            </div>
+
+            <div class="route-fields full-row hidden" data-route-fields="waypoints">
+              <label class="full-row">
+                <span>Waypoint list: x,y по строкам</span>
+                <textarea name="routeWaypoints" rows="5">-3200,-2600
+-900,-1200
+1700,850
+3200,2200</textarea>
+              </label>
+              <div class="form-grid">
+                <label>
+                  <span>Скорость, м/с</span>
+                  <input name="routeWaypointSpeed" type="number" value="45" min="1" step="1" />
+                </label>
+                <label>
+                  <span>Частота truth, Гц</span>
+                  <input name="routeWaypointHz" type="number" value="5" min="1" max="10" step="1" />
+                </label>
+              </div>
+            </div>
+
+            <div class="route-fields full-row hidden" data-route-fields="automatic">
+              <div class="form-grid">
+                <label>
+                  <span>Старт X, м</span>
+                  <input name="routeAutoStartX" type="number" value="-3500" step="50" />
+                </label>
+                <label>
+                  <span>Старт Y, м</span>
+                  <input name="routeAutoStartY" type="number" value="-3500" step="50" />
+                </label>
+                <label>
+                  <span>Финиш X, м</span>
+                  <input name="routeAutoEndX" type="number" value="3500" step="50" />
+                </label>
+                <label>
+                  <span>Финиш Y, м</span>
+                  <input name="routeAutoEndY" type="number" value="2500" step="50" />
+                </label>
+                <label>
+                  <span>Скорость, м/с</span>
+                  <input name="routeAutoSpeed" type="number" value="45" min="1" step="1" />
+                </label>
+                <label>
+                  <span>Частота truth, Гц</span>
+                  <input name="routeAutoHz" type="number" value="5" min="1" max="10" step="1" />
+                </label>
+                <label>
+                  <span>Желаемая длина, м</span>
+                  <input name="routeAutoDesiredLength" type="number" value="10500" min="1" step="100" />
+                </label>
+                <label>
+                  <span>Мин. наблюдаемость</span>
+                  <input name="routeAutoMinObservability" type="number" value="0.25" min="0" max="1" step="0.05" />
+                </label>
+                <label class="full-row">
+                  <span>Или желаемая длительность, с</span>
+                  <input name="routeAutoDesiredDuration" type="number" placeholder="если длина пустая" min="5" step="5" />
+                </label>
+              </div>
+            </div>
+
+            <div class="route-nmea-box full-row">
+              <strong>Параметры NMEA по маршруту</strong>
+              <div class="form-grid">
+                <label>
+                  <span>Частота NMEA, Гц</span>
+                  <input name="routeNmeaHz" type="number" value="5" min="1" max="10" step="1" />
+                </label>
+                <label>
+                  <span>Шум, м</span>
+                  <input name="routeNmeaNoiseStd" type="number" value="2.5" min="0" step="0.1" />
+                </label>
+                <label>
+                  <span>Выбросы</span>
+                  <input name="routeNmeaOutlierProb" type="number" value="0" min="0" max="1" step="0.01" />
+                </label>
+                <label>
+                  <span>Пропуски</span>
+                  <input name="routeNmeaDropoutProb" type="number" value="0" min="0" max="1" step="0.01" />
+                </label>
+                <label class="full-row">
+                  <span>Дрейф, м/с</span>
+                  <input name="routeNmeaDriftMps" type="number" value="0" step="0.01" />
+                </label>
+              </div>
+            </div>
+          </form>
+
+          <div class="route-actions">
+            <button id="buildRouteButton" class="primary-button" type="button">Построить маршрут</button>
+            <button id="generateRouteNmeaButton" class="secondary-dark-button" type="button" disabled>Создать NMEA</button>
+            <button id="runRouteTercomButton" class="secondary-dark-button" type="button" disabled>Запустить TERCOM</button>
+          </div>
+          <p id="routeMessage" class="run-message">Маршрут ещё не построен</p>
+          <div id="routeMetrics" class="route-metrics"></div>
+          <div id="routeWarnings" class="route-warnings"></div>
+        </section>
+
+        <section class="history-panel">
+          <div class="section-title compact">
+            <div>
+              <h2>История</h2>
+              <p>Последние web-запуски</p>
+            </div>
+            <button id="refreshRunsButton" class="icon-button" type="button" title="Обновить историю">↻</button>
+          </div>
+          <div id="runsList" class="runs-list"></div>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <span class="eyebrow">Панель мониторинга</span>
+            <h2>Оценка траектории и качества совпадения</h2>
+          </div>
+          <div class="status-chips">
+            <span class="chip">0–360°</span>
+            <span class="chip">Pearson r</span>
+            <span class="chip">x/y ENU</span>
+          </div>
+        </header>
+
+        <section class="metrics-strip">
+          <article class="metric-tile confidence" id="confidenceTile">
+            <span>Уверенность</span>
+            <strong id="metricConfidence">—</strong>
+            <small>0..1</small>
+          </article>
+          <article class="metric-tile">
+            <span>Неоднозначность</span>
+            <strong id="metricAmbiguity">—</strong>
+            <small>ambiguity flag</small>
+          </article>
+          <article class="metric-tile">
+            <span>Азимут</span>
+            <strong id="metricAzimuth">—</strong>
+            <small>по часовой от севера</small>
+          </article>
+          <article class="metric-tile">
+            <span>Скорость</span>
+            <strong id="metricSpeed">—</strong>
+            <small>м/с</small>
+          </article>
+          <article class="metric-tile">
+            <span>X</span>
+            <strong id="metricX">—</strong>
+            <small>восток, м</small>
+          </article>
+          <article class="metric-tile">
+            <span>Y</span>
+            <strong id="metricY">—</strong>
+            <small>север, м</small>
+          </article>
+          <article class="metric-tile">
+            <span>Ошибка XY</span>
+            <strong id="metricHorizontalError">—</strong>
+            <small>если есть truth</small>
+          </article>
+          <article class="metric-tile">
+            <span>Ошибка курса</span>
+            <strong id="metricHeadingError">—</strong>
+            <small>градусы</small>
+          </article>
+        </section>
+
+        <section class="summary-panel">
+          <div class="section-title">
+            <div>
+              <span class="eyebrow">Активный запуск</span>
+              <h2 id="activeRunTitle">Запуск ещё не выбран</h2>
+              <p id="activeRunPath">Выберите карту и нажмите «Запустить».</p>
+            </div>
+            <div class="report-actions">
+              <a id="reportLink" class="secondary-button disabled" href="#" target="_blank" rel="noreferrer">HTML-отчёт</a>
+              <a id="summaryLink" class="secondary-button disabled" href="#" target="_blank" rel="noreferrer">JSON</a>
+            </div>
+          </div>
+          <div class="metric-help">
+            <span><strong>Уверенность</strong> падает на плоском или неоднозначном рельефе.</span>
+            <span><strong>Heatmap</strong> показывает корреляцию по азимуту и сдвигу.</span>
+            <span><strong>Ошибка XY</strong> считается только при наличии truth-траектории.</span>
+          </div>
+          <div id="detailsGrid" class="details-grid"></div>
+        </section>
+
+        <section class="charts-grid">
+          <figure class="chart-panel wide route-plan-panel">
+            <figcaption>
+              <span>План маршрута</span>
+              <small>DEM, точки, направление, длина</small>
+            </figcaption>
+            <img id="routePlanImage" alt="План маршрута БПЛА на DEM" />
+          </figure>
+          <figure class="chart-panel wide">
+            <figcaption>
+              <span>Карта высот и траектории</span>
+              <small>truth vs estimate</small>
+            </figcaption>
+            <img id="demTracksImage" alt="Карта DEM с траекториями" />
+          </figure>
+          <figure class="chart-panel">
+            <figcaption>
+              <span>Тепловая карта корреляции</span>
+              <small>azimuth × shift</small>
+            </figcaption>
+            <img id="heatmapImage" alt="Тепловая карта корреляции" />
+          </figure>
+          <figure class="chart-panel">
+            <figcaption>
+              <span>Профиль рельефа</span>
+              <small>observed vs reference</small>
+            </figcaption>
+            <img id="profileImage" alt="Профиль рельефа" />
+          </figure>
+          <figure class="chart-panel">
+            <figcaption>
+              <span>Скорость</span>
+              <small>time series</small>
+            </figcaption>
+            <img id="speedImage" alt="График скорости" />
+          </figure>
+          <figure class="chart-panel">
+            <figcaption>
+              <span>Уверенность</span>
+              <small>confidence / ambiguity</small>
+            </figcaption>
+            <img id="confidenceImage" alt="График уверенности" />
+          </figure>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

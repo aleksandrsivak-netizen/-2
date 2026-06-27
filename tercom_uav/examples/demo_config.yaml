@@ -1,0 +1,26 @@
+simulation:
+  dem_path: null
+  baro_alt_msl: 1500.0
+  speed_mps: 55.0
+  heading_deg: 73.0
+  duration_s: 180.0
+  hz: 5.0
+  noise_std_m: 2.5
+  outlier_prob: 0.01
+  outlier_std_m: 35.0
+  dropout_prob: 0.0
+  drift_mps: 0.0
+  sensor_min_m: 0.0
+  sensor_max_m: 5000.0
+correlation:
+  azimuth_step_deg: 1.0
+  shift_min_m: -6000.0
+  shift_max_m: 6000.0
+  shift_step_m: 30.0
+  sample_spacing_m: 30.0
+  coarse_to_fine: false
+kalman:
+  enabled: false
+  alpha: 0.65
+  beta: 0.18
+
