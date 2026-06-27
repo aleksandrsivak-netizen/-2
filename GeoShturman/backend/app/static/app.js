@@ -136,7 +136,7 @@
   }
 
   /* --------------------------- состояние --------------------------- */
-  const state = { radio: [], terrain: [], craft: "uav", connected: false };
+  const state = { radio: [], terrain: [], craft: "uav", connected: false, log: [], solutions: [], lastSol: null };
 
   function setSolver(txt, on) { const e = $("#sysSolver"); if (e) { e.textContent = txt; e.className = on ? "green" : "ok"; } }
   function setStreamState(txt, on) {
@@ -149,6 +149,8 @@
   function applyTelemetry(m) {
     state.radio.push(m.radio_agl); state.terrain.push(m.terrain_msl);
     if (state.radio.length > 400) { state.radio.shift(); state.terrain.shift(); }
+    state.log.push({ t: m.elapsed_s, radio_agl: m.radio_agl, terrain_msl: m.terrain_msl, raw: m.raw });
+    if (state.log.length > 6000) state.log.shift();
     $("#m-radio").textContent = fmt(m.radio_agl, 0);
     $("#m-baro").textContent = fmt(m.baro_msl, 0);
     $("#m-count").textContent = m.n_valid;
@@ -190,6 +192,18 @@
       $("#fp-lat").textContent = fmt(m.lat, 4); $("#fp-lon").textContent = fmt(m.lon, 4);
       $("#fp-alt").textContent = fmt(m.altitude_msl, 0); $("#fp-acc").textContent = fmt(confPct, 1);
     }
+    // метрики точности / производительности / режимы
+    if (m.cep50_m != null) $("#m-cep").textContent = `${fmt(m.cep50_m, 0)} / ${fmt(m.cep95_m, 0)} м`;
+    if (m.along_track_m != null) $("#m-axt").textContent = `${fmt(m.along_track_m, 0)} / ${fmt(m.cross_track_m, 0)} м`;
+    if (m.solve_ms != null) { const e = $("#m-ms"); e.textContent = `${fmt(m.solve_ms, 0)} мс`; e.className = m.solve_ms < 1500 ? "green" : "ok"; }
+    if (m.mode) { const e = $("#m-mode"); e.textContent = m.mode === "DR" ? "DR (счисление)" : "TRN"; e.className = m.mode === "DR" ? "warn" : "green"; }
+    if (m.integrity) { const e = $("#m-integ"); e.textContent = m.integrity; e.className = m.integrity === "OK" ? "green" : "warn"; }
+    state.lastSol = m;
+    state.solutions.push({ azimuth_deg: m.azimuth_deg, speed_mps: m.speed_mps, correlation: m.correlation,
+      confidence: m.confidence, lat: m.lat, lon: m.lon, cep50_m: m.cep50_m, cep95_m: m.cep95_m,
+      along_track_m: m.along_track_m, cross_track_m: m.cross_track_m, solve_ms: m.solve_ms,
+      mode: m.mode, integrity: m.integrity });
+    if (state.solutions.length > 2000) state.solutions.shift();
     setSolver("РЕШЕНИЕ НАЙДЕНО", true);
     $("#navTitle").textContent = "НАВИГАЦИЯ АКТИВНА";
     $("#navSub").textContent =
@@ -250,6 +264,40 @@
   });
   $("#btnStop").addEventListener("click", async () => { try { await api("/api/stream/stop"); } catch {} stopFallback(); setStreamState("ОСТАНОВЛЕН", false); });
   $("#btnReset").addEventListener("click", async () => { try { await api("/api/stream/reset"); } catch { handleMessage({ type: "reset" }); } stopFallback(); });
+
+  /* --------------------------- экспорт отчёта --------------------------- */
+  function download(name, text, type) {
+    const url = URL.createObjectURL(new Blob([text], { type }));
+    const a = document.createElement("a"); a.href = url; a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+  $("#btnExport").addEventListener("click", () => {
+    if (!state.log.length) { pushMsg("Нет данных для экспорта — запустите поток", "alert"); return; }
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    // CSV телеметрии
+    const csv = ["t_s,radio_agl_m,terrain_msl_m,nmea"]
+      .concat(state.log.map((r) => `${r.t ?? ""},${r.radio_agl ?? ""},${r.terrain_msl ?? ""},${(r.raw || "").replace(/,/g, ";")}`))
+      .join("\n");
+    download(`geoshturman_telemetry_${stamp}.csv`, csv, "text/csv");
+    // JSON-отчёт
+    const s = state.lastSol || {};
+    const report = {
+      generated_utc: new Date().toISOString(),
+      samples: state.log.length,
+      source: $("#m-source").textContent,
+      dem_source: $("#fDem").textContent,
+      final_solution: {
+        azimuth_deg: s.azimuth_deg, speed_mps: s.speed_mps, correlation: s.correlation,
+        confidence: s.confidence, lat: s.lat, lon: s.lon,
+        cep50_m: s.cep50_m, cep95_m: s.cep95_m,
+        along_track_m: s.along_track_m, cross_track_m: s.cross_track_m,
+        solve_ms: s.solve_ms, mode: s.mode, integrity: s.integrity,
+      },
+      solutions: state.solutions,
+    };
+    download(`geoshturman_report_${stamp}.json`, JSON.stringify(report, null, 2), "application/json");
+    pushMsg(`Отчёт выгружен: ${state.log.length} замеров, ${state.solutions.length} решений`, "ok");
+  });
 
   /* --------------------------- аппарат --------------------------- */
   document.querySelectorAll("#craftSeg .seg__b").forEach((b) => b.addEventListener("click", () => {
@@ -478,5 +526,18 @@
     drawSpark(state.radio); drawProfile(state.radio, state.terrain);
   });
   initScenes(); drawCompass(null); drawGauge("#confGauge", null); drawGauge("#loadGauge", 0);
+  // подгрузить реальный рельеф DEM на 3D-карту
+  (async () => {
+    try {
+      const r = await fetch("/api/dem/grid?side=72");
+      if (!r.ok) return;
+      const g = await r.json();
+      if (g.z && g.z.length && window.GeoScenes) {
+        window.GeoScenes.setTerrainGrid(g.z);
+        pushMsg(`DEM загружен: ${g.source} · перепад ${g.span_m} м`, "ok");
+        const d = $("#fDem"); if (d) { const real = /coper|glo/i.test(g.source); d.textContent = real ? "GLO-30" : "СИНТЕТ"; d.className = real ? "green" : "ok"; }
+      }
+    } catch {}
+  })();
   connect();
 })();

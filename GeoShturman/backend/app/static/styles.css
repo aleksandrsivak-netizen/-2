@@ -41,6 +41,7 @@ canvas { display: block; }
 ::selection { background: #34d39933; }
 
 .green { color: var(--green); }
+.warn { color: var(--amber); }
 .ok { color: var(--green); }
 .muted { color: var(--dim); font-size: 10px; letter-spacing: 1px; margin: 2px 0 0; }
 .muted-i { color: var(--dim); font-weight: 400; text-transform: none; letter-spacing: .3px; }

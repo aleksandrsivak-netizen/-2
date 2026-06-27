@@ -84,19 +84,34 @@
     toggleRotate() { this.autoRotate = !this.autoRotate; },
     toggleWire() { if (this.wireMesh) this.wireMesh.visible = !this.wireMesh.visible; },
 
+    // базовая нормированная высота (-1..1): реальный DEM-грид или синтетический шум
+    _baseH(u01, v01) {
+      if (this.grid && this.grid.length) {
+        const z = this.grid, R = z.length, C = z[0].length;
+        const fr = THREE.MathUtils.clamp(v01, 0, 1) * (R - 1), fc = THREE.MathUtils.clamp(u01, 0, 1) * (C - 1);
+        const r0 = Math.floor(fr), c0 = Math.floor(fc), r1 = Math.min(R - 1, r0 + 1), c1 = Math.min(C - 1, c0 + 1);
+        const tr = fr - r0, tc = fc - c0;
+        const a = z[r0][c0] + (z[r0][c1] - z[r0][c0]) * tc;
+        const b = z[r1][c0] + (z[r1][c1] - z[r1][c0]) * tc;
+        return (a + (b - a) * tr) * 2 - 1; // 0..1 → -1..1
+      }
+      return this.noise(u01 * 6, v01 * 6);
+    },
+
     _buildTerrain() {
-      const SZ = 90, SEG = 120, A = 9;
+      const SZ = this._SZ = 90, SEG = 120, A = this._A = 9;
       const geo = new THREE.PlaneGeometry(SZ, SZ, SEG, SEG);
       geo.rotateX(-Math.PI / 2);
       const pos = geo.attributes.position;
       const colors = [];
       const col = new THREE.Color();
+      const useGrid = !!(this.grid && this.grid.length);
       for (let i = 0; i < pos.count; i++) {
         const x = pos.getX(i), z = pos.getZ(i);
-        const u = (x / SZ) * 6, v = (z / SZ) * 6;
-        let h = this.noise(u, v) * A;
-        const edge = 1 - Math.min(1, (Math.abs(x) + Math.abs(z)) / SZ); // приподнять центр
-        h *= 0.5 + edge;
+        const u01 = x / SZ + 0.5, v01 = z / SZ + 0.5;
+        let h = this._baseH(u01, v01) * A;
+        const edge = 1 - Math.min(1, (Math.abs(x) + Math.abs(z)) / SZ);
+        h *= useGrid ? (0.85 + edge * 0.3) : (0.5 + edge); // реальный рельеф почти не «поджимаем»
         pos.setY(i, h);
         const t = THREE.MathUtils.clamp((h + A) / (2 * A), 0, 1);
         col.setRGB(0.03 + t * 0.10, 0.07 + t * 0.22, 0.10 + t * 0.18);
@@ -112,10 +127,20 @@
       this.wireMesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x1b4a55, wireframe: true, transparent: true, opacity: 0.12 }));
       this.scene.add(this.wireMesh);
       this._heightAt = (x, z) => {
-        const u = (x / SZ) * 6, v = (z / SZ) * 6;
+        const u01 = x / SZ + 0.5, v01 = z / SZ + 0.5;
         const edge = 1 - Math.min(1, (Math.abs(x) + Math.abs(z)) / SZ);
-        return this.noise(u, v) * A * (0.5 + edge);
+        return this._baseH(u01, v01) * A * (useGrid ? (0.85 + edge * 0.3) : (0.5 + edge));
       };
+    },
+
+    // загрузить реальную сетку высот DEM (нормированную 0..1) и перестроить рельеф
+    setTerrainGrid(z) {
+      if (!z || !z.length || !z[0].length) return;
+      this.grid = z;
+      if (this.plane) this.scene.remove(this.plane);
+      if (this.wireMesh) this.scene.remove(this.wireMesh);
+      this._buildTerrain();
+      this._rebuildTrajectory();
     },
 
     _buildTrajectory() {
@@ -372,6 +397,7 @@
     setCraftType: (t) => Terrain.setCraftType(t),
     setCorrPeak: (u, v) => Corr.setPeak(u, v),
     setCorrSurface: (z, peak) => Corr.setSurface(z, peak),
+    setTerrainGrid: (z) => Terrain.setTerrainGrid(z),
     resize: () => { Terrain.resize(); Corr.resize(); },
     zoom: (s) => Terrain.zoom(s),
     resetView: () => Terrain.resetView(),

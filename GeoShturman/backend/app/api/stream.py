@@ -51,6 +51,12 @@ class StreamHub:
         # --- предфильтрация входного потока ---
         self.raw_window: list[float] = []   # окно сырых значений радиовысоты для Хампеля
         self.outliers_rejected: int = 0     # сколько выбросов отброшено
+        # --- эталон (для оценки точности в симуляции) и метрики ---
+        self.truth_xy: list[tuple[float, float]] | None = None
+        self.truth_az: float | None = None
+        self.truth_speed: float | None = None
+        self.pos_errors: list[float] = []   # ошибки позиции по решениям, м
+        self.prev_solution: dict[str, Any] | None = None
         self.started_at: float | None = None
         self.last_solve_at: float = 0.0
         self.solving: bool = False
@@ -84,6 +90,11 @@ class StreamHub:
         self.samples.clear()
         self.raw_window.clear()
         self.outliers_rejected = 0
+        self.truth_xy = None
+        self.truth_az = None
+        self.truth_speed = None
+        self.pos_errors.clear()
+        self.prev_solution = None
         self.started_at = None
         self.last_solution = None
         self.last_solve_at = 0.0
@@ -170,14 +181,59 @@ class StreamHub:
     async def _run_solve(self, window: list[dict[str, Any]]) -> None:
         try:
             loop = asyncio.get_running_loop()
+            t0 = time.perf_counter()
             solution = await loop.run_in_executor(None, _solve_window, window, self.baro_msl)
             if solution:
+                solution["solve_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
+                self._augment_metrics(solution)
                 self.last_solution = solution
+                self.prev_solution = solution
                 await self.broadcast({"type": "solution", **solution})
         except Exception:
             logger.exception("stream solve failed")
         finally:
             self.solving = False
+
+    def _augment_metrics(self, sol: dict[str, Any]) -> None:
+        """CEP50/95, along/cross-track ошибка (если есть эталон), режим (TRN/DR),
+        интегрити-проверка (резкие скачки решения)."""
+        import numpy as _np
+
+        # --- режим работы по достоверности/информативности рельефа ---
+        conf = float(sol.get("confidence") or 0.0)
+        info = float((sol.get("quality") or {}).get("terrain_informativeness") or 1.0)
+        sol["mode"] = "DR" if (conf < 0.45 or info < 0.25) else "TRN"
+
+        # --- интегрити: аномальный скачок азимута/скорости между решениями ---
+        integrity = "OK"
+        if self.prev_solution and sol.get("azimuth_deg") is not None and self.prev_solution.get("azimuth_deg") is not None:
+            d_az = abs(((sol["azimuth_deg"] - self.prev_solution["azimuth_deg"] + 180) % 360) - 180)
+            d_sp = abs(float(sol.get("speed_mps") or 0) - float(self.prev_solution.get("speed_mps") or 0))
+            if d_az > 35 or d_sp > 25:
+                integrity = "WARN"
+        sol["integrity"] = integrity
+
+        # --- точность относительно эталона (только в симуляции) ---
+        if self.truth_xy and sol.get("lat") is not None:
+            idx = min(len(self.samples) - 1, len(self.truth_xy) - 1)
+            tx, ty = self.truth_xy[idx]
+            # оценка положения в локальных метрах, реконструированная из lat/lon решения
+            ex = (sol["lon"] - ORIGIN_LON) * (111_320.0 * math.cos(math.radians(ORIGIN_LAT)))
+            ey = (sol["lat"] - ORIGIN_LAT) * 111_320.0
+            err = float(math.hypot(ex - tx, ey - ty))
+            self.pos_errors.append(err)
+            arr = _np.asarray(self.pos_errors[-200:], dtype=float)
+            sol["pos_error_m"] = round(err, 1)
+            sol["cep50_m"] = round(float(_np.percentile(arr, 50)), 1)
+            sol["cep95_m"] = round(float(_np.percentile(arr, 95)), 1)
+            # along/cross-track относительно истинного курса
+            if self.truth_az is not None:
+                hr = math.radians(self.truth_az)
+                dx, dy = ex - tx, ey - ty
+                along = dx * math.sin(hr) + dy * math.cos(hr)
+                cross = dx * math.cos(hr) - dy * math.sin(hr)
+                sol["along_track_m"] = round(along, 1)
+                sol["cross_track_m"] = round(cross, 1)
 
     # ------------------------- симулятор -------------------------
     async def start_simulation(self, *, hz: float, duration_s: float, speed_mps: float,
@@ -220,6 +276,10 @@ class StreamHub:
         truth = generate_truth_trajectory(
             start_x_m=start_x_m, start_y_m=start_y_m, speed_mps=speed_mps,
             azimuth_deg=heading_deg, duration_s=duration_s, sample_rate_hz=hz)
+        # эталон для оценки точности (CEP/along-cross)
+        self.truth_xy = list(zip([float(v) for v in truth.x_m], [float(v) for v in truth.y_m]))
+        self.truth_az = float(heading_deg)
+        self.truth_speed = float(speed_mps)
         stream = generate_sensor_stream(dem=dem, truth_trajectory=truth,
                                         barometric_altitude_msl=baro_msl, seed=7)
         await self.broadcast({"type": "stream_start",
@@ -416,3 +476,37 @@ async def stream_reset() -> dict[str, str]:
     await hub.stop_simulation()
     await hub.reset()
     return {"status": "ok"}
+
+
+@router.get("/api/dem/grid")
+async def dem_grid(width_m: float = 8000, height_m: float = 8000, resolution_m: float = 30,
+                   terrain_type: str = "mixed", side: int = 72) -> dict[str, Any]:
+    """Прореженная сетка высот текущего DEM (реального Copernicus или синтетического)
+    для отрисовки настоящего рельефа на 3D-карте."""
+    import numpy as _np
+
+    loop = asyncio.get_running_loop()
+
+    def _build() -> dict[str, Any]:
+        from app.core.real_dem import provide_dem
+        dem = provide_dem(width_m=width_m, height_m=height_m, resolution_m=resolution_m,
+                          terrain_type=terrain_type, lat=ORIGIN_LAT, lon=ORIGIN_LON)
+        elev = _np.asarray(dem.elevation, dtype=float)
+        R, C = elev.shape
+        ri = _np.linspace(0, R - 1, min(side, R)).astype(int)
+        ci = _np.linspace(0, C - 1, min(side, C)).astype(int)
+        small = elev[_np.ix_(ri, ci)]
+        mn, mx = float(small.min()), float(small.max())
+        norm = (small - mn) / (mx - mn) if mx > mn else _np.zeros_like(small)
+        return {
+            "z": _np.round(norm, 4).tolist(),
+            "min_m": round(mn, 1), "max_m": round(mx, 1), "span_m": round(mx - mn, 1),
+            "rows": int(small.shape[0]), "cols": int(small.shape[1]),
+            "source": _dem_label(),
+        }
+
+    try:
+        return await loop.run_in_executor(None, _build)
+    except Exception:
+        logger.exception("dem_grid failed")
+        return {"z": [], "source": "error"}
