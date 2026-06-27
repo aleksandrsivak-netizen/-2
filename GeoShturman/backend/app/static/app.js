@@ -490,6 +490,7 @@
       terrain_type: $("#pTerrain").value };
     mStatus("Запуск потока по параметрам…"); closeDrawer();
     if (window.GeoScenes) window.GeoScenes.setAzimuth(p.heading_deg);
+    refreshDemGrid(p); // 3D-рельеф должен совпадать с картой, на которой реально летит поток
     try { await api("/api/stream/simulate", p); }
     catch { feedAsStream(genTrack(p.barometric_altitude_msl, Math.round(p.duration_s * p.hz), p.hz, p.heading_deg, p.speed_mps, p.start_x_m), p.barometric_altitude_msl, p.hz); }
   });
@@ -526,10 +527,16 @@
     drawSpark(state.radio); drawProfile(state.radio, state.terrain);
   });
   initScenes(); drawCompass(null); drawGauge("#confGauge", null); drawGauge("#loadGauge", 0);
-  // подгрузить реальный рельеф DEM на 3D-карту
-  (async () => {
+  // подгрузить рельеф DEM на 3D-карту — те же параметры, что у текущего потока,
+  // иначе 3D-рельеф визуально не совпадает с картой, по которой решает ядро.
+  async function refreshDemGrid(params) {
+    const p = params || {};
+    const q = new URLSearchParams({
+      width_m: p.width_m ?? 8000, height_m: p.height_m ?? p.width_m ?? 8000,
+      resolution_m: p.resolution_m ?? 30, terrain_type: p.terrain_type ?? "mixed", side: 72,
+    });
     try {
-      const r = await fetch("/api/dem/grid?side=72");
+      const r = await fetch(`/api/dem/grid?${q.toString()}`);
       if (!r.ok) return;
       const g = await r.json();
       if (g.z && g.z.length && window.GeoScenes) {
@@ -538,6 +545,7 @@
         const d = $("#fDem"); if (d) { const real = /coper|glo/i.test(g.source); d.textContent = real ? "GLO-30" : "СИНТЕТ"; d.className = real ? "green" : "ok"; }
       }
     } catch {}
-  })();
+  }
+  refreshDemGrid();
   connect();
 })();

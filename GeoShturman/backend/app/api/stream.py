@@ -56,6 +56,21 @@ class StreamHub:
         self.truth_az: float | None = None
         self.truth_speed: float | None = None
         self.pos_errors: list[float] = []   # ошибки позиции по решениям, м
+        # Параметры DEM, на котором реально летит текущий поток (симуляция
+        # или внешний источник). _solve_window ДОЛЖЕН искать решение на этой
+        # же карте — иначе он сопоставляет профиль с другой картой и выдаёт
+        # бессмысленный, но визуально "уверенный" результат на дашборде.
+        self.dem_params: dict[str, Any] = {
+            "width_m": 8000.0, "height_m": 8000.0, "resolution_m": 30.0, "terrain_type": "mixed",
+        }
+        # Центр поиска для солвера. Без него solve_navigation ищет вокруг
+        # центра ВСЕЙ карты, что совпадает с реальным стартом только пока
+        # карта 8000x8000 со стартом по умолчанию (4000, 4000) - на любой
+        # другой карте (например 12000x12000) центр карты (6000, 6000)
+        # уводит поиск за километры от истинного трека. Инициализируется
+        # реальной точкой старта потока и затем "следует" за последней
+        # успешной оценкой положения.
+        self.search_center: tuple[float, float] | None = None
         self.prev_solution: dict[str, Any] | None = None
         self.started_at: float | None = None
         self.last_solve_at: float = 0.0
@@ -98,6 +113,10 @@ class StreamHub:
         self.started_at = None
         self.last_solution = None
         self.last_solve_at = 0.0
+        self.dem_params = {
+            "width_m": 8000.0, "height_m": 8000.0, "resolution_m": 30.0, "terrain_type": "mixed",
+        }
+        self.search_center = None
         await self.broadcast({"type": "reset"})
 
     async def ingest_text(self, text: str, baro_msl: float | None = None) -> dict[str, int]:
@@ -182,12 +201,33 @@ class StreamHub:
         try:
             loop = asyncio.get_running_loop()
             t0 = time.perf_counter()
-            solution = await loop.run_in_executor(None, _solve_window, window, self.baro_msl)
+            solution = await loop.run_in_executor(
+                None, _solve_window, window, self.baro_msl, self.dem_params, self.search_center
+            )
             if solution:
                 solution["solve_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
                 self._augment_metrics(solution)
                 self.last_solution = solution
                 self.prev_solution = solution
+                # Поиск следующего окна начинаем от оценённого НАЧАЛА текущего
+                # окна (не от конца!): соседние вызовы используют сильно
+                # перекрывающиеся скользящие окна (MAX_WINDOW=240 samples,
+                # пересчёт раз в SOLVE_EVERY_S=2.5s), поэтому начало нового
+                # окна почти совпадает с началом предыдущего - а вовсе не с
+                # его концом, который может быть на километр дальше по треку.
+                #
+                # integrity == "WARN" значит сам _augment_metrics обнаружил
+                # неправдоподобный скачок азимута/скорости относительно
+                # предыдущего решения - такую оценку нельзя использовать как
+                # новый центр поиска, иначе один шумный/неоднозначный фикс
+                # "увозит" трекинг в сторону и последующие окна продолжают
+                # искать вокруг уже неверной точки.
+                if (
+                    solution.get("integrity") != "WARN"
+                    and solution.get("start_x_m") is not None
+                    and solution.get("start_y_m") is not None
+                ):
+                    self.search_center = (float(solution["start_x_m"]), float(solution["start_y_m"]))
                 await self.broadcast({"type": "solution", **solution})
         except Exception:
             logger.exception("stream solve failed")
@@ -244,6 +284,11 @@ class StreamHub:
         await self.stop_simulation()
         await self.reset()
         self.baro_msl = float(baro_msl)
+        self.dem_params = {
+            "width_m": float(width_m), "height_m": float(height_m),
+            "resolution_m": float(resolution_m), "terrain_type": str(terrain_type),
+        }
+        self.search_center = (float(start_x_m), float(start_y_m))
         self.sim_task = asyncio.create_task(
             self._simulate(hz=hz, duration_s=duration_s, speed_mps=speed_mps,
                            heading_deg=heading_deg, baro_msl=baro_msl,
@@ -343,25 +388,51 @@ def _extract_heatmap(solution: Any, max_side: int = 48) -> dict[str, Any] | None
         return None
 
 
-def _solve_window(window: list[dict[str, Any]], baro_msl: float) -> dict[str, Any] | None:
-    """Синхронный пересчёт решения ядром по накопленному окну NMEA."""
+def _solve_window(
+    window: list[dict[str, Any]],
+    baro_msl: float,
+    dem_params: dict[str, Any] | None = None,
+    search_center: tuple[float, float] | None = None,
+) -> dict[str, Any] | None:
+    """Синхронный пересчёт решения ядром по накопленному окну NMEA.
+
+    `dem_params` must match the DEM the current stream is actually flying
+    over (set by `StreamHub.start_simulation` from the /api/stream/simulate
+    request, or the hub's default for an external NMEA source). Solving
+    against a different DEM than the one that generated the telemetry
+    produces a confident-looking but meaningless match.
+
+    `search_center` anchors the grid search near the real track instead of
+    the DEM's geometric center: without it, `solve_navigation` defaults to
+    the middle of the whole map, which only happens to match the default
+    demo start point (4000, 4000) on the default 8000x8000 map - on any
+    other map size or start point the search center can be kilometers away
+    from the true flight path.
+    """
     try:
         from app.core.navigation import solve_navigation
         from app.core.real_dem import provide_dem
 
+        params = dem_params or {"width_m": 8000.0, "height_m": 8000.0, "resolution_m": 30.0, "terrain_type": "mixed"}
         nmea_text = "\n".join(s["raw"] for s in window)
-        dem = provide_dem(width_m=8000, height_m=8000, resolution_m=30,
-                          terrain_type="mixed", lat=ORIGIN_LAT, lon=ORIGIN_LON)
+        dem = provide_dem(width_m=params["width_m"], height_m=params["height_m"],
+                          resolution_m=params["resolution_m"], terrain_type=params["terrain_type"],
+                          lat=ORIGIN_LAT, lon=ORIGIN_LON)
+        center_x, center_y = search_center if search_center is not None else (None, None)
         solution = solve_navigation(
             dem=dem, nmea_text=nmea_text, barometric_altitude_msl=baro_msl,
-            sample_rate_hz=5.0, search_radius_m=900.0, coarse_step_m=250.0, fine_step_m=75.0,
+            sample_rate_hz=5.0, search_center_x_m=center_x, search_center_y_m=center_y,
+            search_radius_m=900.0, coarse_step_m=250.0, fine_step_m=75.0,
             azimuth_coarse_step_deg=10.0, azimuth_fine_step_deg=2.0,
             speed_min_mps=20.0, speed_max_mps=80.0, speed_coarse_step_mps=5.0,
             speed_fine_step_mps=2.0, enable_kalman=True, parallel_jobs=1,
             compensate_baro_drift=True)
         est = solution.estimated
-        lat, lon = _meters_to_latlon(float(est.get("end_x_m", est.get("start_x_m", 4000))),
-                                     float(est.get("end_y_m", est.get("start_y_m", 4000))))
+        start_x = float(est.get("start_x_m", 4000))
+        start_y = float(est.get("start_y_m", 4000))
+        end_x = float(est.get("end_x_m", start_x))
+        end_y = float(est.get("end_y_m", start_y))
+        lat, lon = _meters_to_latlon(end_x, end_y)
         radio = [round(s["radio_agl"], 1) for s in window]
         terrain = [round(s["terrain_msl"], 1) for s in window]
         return {
@@ -371,6 +442,7 @@ def _solve_window(window: list[dict[str, Any]], baro_msl: float) -> dict[str, An
             "confidence": round(float(est.get("confidence", 0)), 3),
             "rmse_m": round(float(est.get("rmse_m", 0)), 1),
             "lat": lat, "lon": lon, "altitude_msl": round(baro_msl, 1),
+            "start_x_m": start_x, "start_y_m": start_y, "x_m": end_x, "y_m": end_y,
             "n_samples": len(window),
             "profile": {"radio": radio[-160:], "terrain": terrain[-160:]},
             "heatmap": _extract_heatmap(solution),

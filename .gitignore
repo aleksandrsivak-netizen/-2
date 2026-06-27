@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
+.venv_win/
 venv/
 *.log
-backend/app/outputs/*/
+**/backend/app/outputs/*/
