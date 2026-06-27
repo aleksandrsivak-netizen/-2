@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import time
 from typing import Any
 
@@ -25,14 +26,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Геопривязка синтетической DEM (как в pipeline.solve_navigation_from_nmea)
-ORIGIN_LAT = 56.10
-ORIGIN_LON = 37.20
+# Геопривязка демо-региона: Хибины (Кольский п-ов) — выраженный рельеф
+# (перепад ~830 м, максимум ~1140 м < 1500 м баро), сильная информативность для TRN.
+ORIGIN_LAT = 67.75
+ORIGIN_LON = 33.70
 
 # Параметры окна/решателя
-MAX_WINDOW = 240          # сколько последних замеров держим для решения
-MIN_SAMPLES_TO_SOLVE = 16  # минимум замеров для запуска ядра
-SOLVE_EVERY_S = 2.5        # как часто пересчитывать решение (по времени потока)
+SOLVE_WINDOW = 300        # окно от старта для фиксации (≈60 с при 5 Гц)
+MIN_SAMPLES_TO_SOLVE = 90  # минимум замеров для надёжного захвата (≈18 с)
+SOLVE_EVERY_S = 2.0        # как часто пересчитывать фиксацию ядром
 
 
 def _meters_to_latlon(x_m: float, y_m: float) -> tuple[float, float]:
@@ -55,8 +57,11 @@ class StreamHub:
         self.truth_xy: list[tuple[float, float]] | None = None
         self.truth_az: float | None = None
         self.truth_speed: float | None = None
-        self.pos_errors: list[float] = []   # ошибки позиции по решениям, м
+        self.pos_errors: list[float] = []   # ошибки позиции (DR vs эталон), м
         self.prev_solution: dict[str, Any] | None = None
+        # --- зафиксированное навигационное решение (старт+курс+скорость) ---
+        # позиция между фиксациями ведётся счислением (dead reckoning)
+        self.nav: dict[str, float] | None = None  # {sx, sy, az, sp}
         self.started_at: float | None = None
         self.last_solve_at: float = 0.0
         self.solving: bool = False
@@ -95,6 +100,7 @@ class StreamHub:
         self.truth_speed = None
         self.pos_errors.clear()
         self.prev_solution = None
+        self.nav = None
         self.started_at = None
         self.last_solution = None
         self.last_solve_at = 0.0
@@ -150,11 +156,11 @@ class StreamHub:
         t_s = m.get("timestamp_s")
         sample = {"t_s": t_s, "radio_agl": radio, "terrain_msl": terrain, "raw": m["raw"]}
         self.samples.append(sample)
-        if len(self.samples) > MAX_WINDOW * 2:
-            self.samples = self.samples[-MAX_WINDOW:]
+        if len(self.samples) > 6000:          # бережём первые SOLVE_WINDOW замеров (якорь)
+            self.samples = self.samples[:SOLVE_WINDOW] + self.samples[-SOLVE_WINDOW:]
 
         elapsed = time.monotonic() - self.started_at
-        await self.broadcast({
+        msg = {
             "type": "telemetry",
             "n_valid": len(self.samples),
             "radio_agl": round(radio, 1),
@@ -164,8 +170,32 @@ class StreamHub:
             "raw": m["raw"],
             "outliers_rejected": self.outliers_rejected,
             "is_outlier": is_outlier,
-            "filters": {"hampel": True, "kalman": True, "particle": len(self.samples) >= MIN_SAMPLES_TO_SOLVE},
-        })
+            "filters": {"hampel": True, "kalman": True, "particle": self.nav is not None},
+        }
+        # счисление (DR) текущей позиции между фиксациями ядра + живой CEP
+        if self.nav is not None and t_s is not None:
+            dist = self.nav["sp"] * float(t_s)
+            a = math.radians(self.nav["az"])
+            ex = self.nav["sx"] + dist * math.sin(a)
+            ey = self.nav["sy"] + dist * math.cos(a)
+            lat, lon = _meters_to_latlon(ex, ey)
+            msg["dr_lat"], msg["dr_lon"] = lat, lon
+            if self.truth_xy:
+                idx = min(len(self.samples) - 1, len(self.truth_xy) - 1)
+                tx, ty = self.truth_xy[idx]
+                err = float(math.hypot(ex - tx, ey - ty))
+                self.pos_errors.append(err)
+                import numpy as _np
+                arr = _np.asarray(self.pos_errors[-400:], dtype=float)
+                msg["pos_error_m"] = round(err, 1)
+                msg["cep50_m"] = round(float(_np.percentile(arr, 50)), 1)
+                msg["cep95_m"] = round(float(_np.percentile(arr, 95)), 1)
+                if self.truth_az is not None:
+                    hr = math.radians(self.truth_az)
+                    dx, dy = ex - tx, ey - ty
+                    msg["along_track_m"] = round(dx * math.sin(hr) + dy * math.cos(hr), 1)
+                    msg["cross_track_m"] = round(dx * math.cos(hr) - dy * math.sin(hr), 1)
+        await self.broadcast(msg)
 
     async def _maybe_solve(self) -> None:
         if self.solving or len(self.samples) < MIN_SAMPLES_TO_SOLVE:
@@ -175,16 +205,28 @@ class StreamHub:
             return
         self.last_solve_at = now
         self.solving = True
-        window = self.samples[-MAX_WINDOW:]
+        # окно от СТАРТА (якорь = центр карты = истинная точка взлёта), капим длину
+        window = self.samples[:SOLVE_WINDOW]
         asyncio.create_task(self._run_solve(window))
 
     async def _run_solve(self, window: list[dict[str, Any]]) -> None:
         try:
             loop = asyncio.get_running_loop()
+            hz = 5.0
+            ts = [s["t_s"] for s in window if s.get("t_s") is not None]
+            if len(ts) >= 2 and (ts[-1] - ts[0]) > 0:
+                hz = min(20.0, max(0.5, (len(ts) - 1) / (ts[-1] - ts[0])))
+
             t0 = time.perf_counter()
-            solution = await loop.run_in_executor(None, _solve_window, window, self.baro_msl)
+            # захват по всей области (центр поиска = центр карты = точка старта)
+            solution = await loop.run_in_executor(None, _solve_window, window, self.baro_msl, None, hz)
             if solution:
                 solution["solve_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
+                # зафиксировать старт+курс+скорость для счисления (DR ведём в телеметрии)
+                if float(solution.get("confidence") or 0) >= 0.4 and solution.get("start_x_m") is not None:
+                    self.nav = {"sx": float(solution["start_x_m"]), "sy": float(solution["start_y_m"]),
+                                "az": float(solution.get("azimuth_deg") or 0),
+                                "sp": float(solution.get("speed_mps") or 0)}
                 self._augment_metrics(solution)
                 self.last_solution = solution
                 self.prev_solution = solution
@@ -195,16 +237,13 @@ class StreamHub:
             self.solving = False
 
     def _augment_metrics(self, sol: dict[str, Any]) -> None:
-        """CEP50/95, along/cross-track ошибка (если есть эталон), режим (TRN/DR),
-        интегрити-проверка (резкие скачки решения)."""
-        import numpy as _np
-
+        """Режим (TRN/DR) и интегрити фиксации. CEP/along/cross — в телеметрии (по DR)."""
         # --- режим работы по достоверности/информативности рельефа ---
         conf = float(sol.get("confidence") or 0.0)
         info = float((sol.get("quality") or {}).get("terrain_informativeness") or 1.0)
         sol["mode"] = "DR" if (conf < 0.45 or info < 0.25) else "TRN"
 
-        # --- интегрити: аномальный скачок азимута/скорости между решениями ---
+        # --- интегрити: аномальный скачок азимута/скорости между фиксациями ---
         integrity = "OK"
         if self.prev_solution and sol.get("azimuth_deg") is not None and self.prev_solution.get("azimuth_deg") is not None:
             d_az = abs(((sol["azimuth_deg"] - self.prev_solution["azimuth_deg"] + 180) % 360) - 180)
@@ -212,28 +251,6 @@ class StreamHub:
             if d_az > 35 or d_sp > 25:
                 integrity = "WARN"
         sol["integrity"] = integrity
-
-        # --- точность относительно эталона (только в симуляции) ---
-        if self.truth_xy and sol.get("lat") is not None:
-            idx = min(len(self.samples) - 1, len(self.truth_xy) - 1)
-            tx, ty = self.truth_xy[idx]
-            # оценка положения в локальных метрах, реконструированная из lat/lon решения
-            ex = (sol["lon"] - ORIGIN_LON) * (111_320.0 * math.cos(math.radians(ORIGIN_LAT)))
-            ey = (sol["lat"] - ORIGIN_LAT) * 111_320.0
-            err = float(math.hypot(ex - tx, ey - ty))
-            self.pos_errors.append(err)
-            arr = _np.asarray(self.pos_errors[-200:], dtype=float)
-            sol["pos_error_m"] = round(err, 1)
-            sol["cep50_m"] = round(float(_np.percentile(arr, 50)), 1)
-            sol["cep95_m"] = round(float(_np.percentile(arr, 95)), 1)
-            # along/cross-track относительно истинного курса
-            if self.truth_az is not None:
-                hr = math.radians(self.truth_az)
-                dx, dy = ex - tx, ey - ty
-                along = dx * math.sin(hr) + dy * math.cos(hr)
-                cross = dx * math.cos(hr) - dy * math.sin(hr)
-                sol["along_track_m"] = round(along, 1)
-                sol["cross_track_m"] = round(cross, 1)
 
     # ------------------------- симулятор -------------------------
     async def start_simulation(self, *, hz: float, duration_s: float, speed_mps: float,
@@ -343,8 +360,15 @@ def _extract_heatmap(solution: Any, max_side: int = 48) -> dict[str, Any] | None
         return None
 
 
-def _solve_window(window: list[dict[str, Any]], baro_msl: float) -> dict[str, Any] | None:
-    """Синхронный пересчёт решения ядром по накопленному окну NMEA."""
+def _solve_window(window: list[dict[str, Any]], baro_msl: float,
+                  center: tuple[float, float] | None = None,
+                  sample_hz: float = 5.0,
+                  speed_lo: float = 20.0, speed_hi: float = 80.0) -> dict[str, Any] | None:
+    """Синхронный пересчёт решения ядром по накопленному окну NMEA.
+
+    Если задан center — режим трекинга: поиск локально вокруг предсказанной
+    позиции с мелким шагом (точнее и быстрее). Иначе — захват по всей области.
+    """
     try:
         from app.core.navigation import solve_navigation
         from app.core.real_dem import provide_dem
@@ -352,16 +376,24 @@ def _solve_window(window: list[dict[str, Any]], baro_msl: float) -> dict[str, An
         nmea_text = "\n".join(s["raw"] for s in window)
         dem = provide_dem(width_m=8000, height_m=8000, resolution_m=30,
                           terrain_type="mixed", lat=ORIGIN_LAT, lon=ORIGIN_LON)
+        if center is not None:
+            # трекинг: малый радиус вокруг предсказанной позиции → точно и быстро
+            tune = dict(search_center_x_m=float(center[0]), search_center_y_m=float(center[1]),
+                        search_radius_m=500.0, coarse_step_m=150.0, fine_step_m=40.0,
+                        azimuth_coarse_step_deg=8.0, azimuth_fine_step_deg=1.0,
+                        speed_coarse_step_mps=4.0, speed_fine_step_mps=1.0)
+        else:  # захват — быстрые грубые параметры по всей области
+            tune = dict(search_radius_m=900.0, coarse_step_m=250.0, fine_step_m=75.0,
+                        azimuth_coarse_step_deg=10.0, azimuth_fine_step_deg=2.0,
+                        speed_coarse_step_mps=5.0, speed_fine_step_mps=2.0)
         solution = solve_navigation(
             dem=dem, nmea_text=nmea_text, barometric_altitude_msl=baro_msl,
-            sample_rate_hz=5.0, search_radius_m=900.0, coarse_step_m=250.0, fine_step_m=75.0,
-            azimuth_coarse_step_deg=10.0, azimuth_fine_step_deg=2.0,
-            speed_min_mps=20.0, speed_max_mps=80.0, speed_coarse_step_mps=5.0,
-            speed_fine_step_mps=2.0, enable_kalman=True, parallel_jobs=1,
-            compensate_baro_drift=True)
+            sample_rate_hz=float(sample_hz), speed_min_mps=float(speed_lo), speed_max_mps=float(speed_hi),
+            enable_kalman=True, parallel_jobs=1, compensate_baro_drift=True, **tune)
         est = solution.estimated
-        lat, lon = _meters_to_latlon(float(est.get("end_x_m", est.get("start_x_m", 4000))),
-                                     float(est.get("end_y_m", est.get("start_y_m", 4000))))
+        ex = float(est.get("end_x_m", est.get("start_x_m", 4000)))
+        ey = float(est.get("end_y_m", est.get("start_y_m", 4000)))
+        lat, lon = _meters_to_latlon(ex, ey)
         radio = [round(s["radio_agl"], 1) for s in window]
         terrain = [round(s["terrain_msl"], 1) for s in window]
         return {
@@ -372,9 +404,13 @@ def _solve_window(window: list[dict[str, Any]], baro_msl: float) -> dict[str, An
             "rmse_m": round(float(est.get("rmse_m", 0)), 1),
             "lat": lat, "lon": lon, "altitude_msl": round(baro_msl, 1),
             "n_samples": len(window),
+            "start_x_m": round(float(est.get("start_x_m", ex)), 1),
+            "start_y_m": round(float(est.get("start_y_m", ey)), 1),
+            "end_x_m": round(ex, 1), "end_y_m": round(ey, 1),
             "profile": {"radio": radio[-160:], "terrain": terrain[-160:]},
             "heatmap": _extract_heatmap(solution),
             "dem_source": _dem_label(),
+            "tracking": center is not None,
             "quality": solution.quality,
         }
     except Exception:
