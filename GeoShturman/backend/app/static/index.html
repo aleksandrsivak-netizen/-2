@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark" />
   <title>ГЕОШТУРМАН · автономная навигация (real-time)</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%2334d399' d='M16 3 4 16l12 13 12-13z'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="/static/styles.css?v=2" />
+  <link rel="stylesheet" href="/static/styles.css?v=3" />
 </head>
 <body>
   <div class="app">
@@ -138,7 +138,7 @@
               <li><i class="sys__i sys__i--pf"></i><span>ПАРТИКЛ.</span><b class="ok" id="fPF">ОЖИДАНИЕ</b></li>
               <li><i class="sys__i sys__i--ins"></i><span>ИНС / DR</span><b class="ok">OK</b></li>
               <li><i class="sys__i sys__i--cpu"></i><span>ПОТОК</span><b class="green" id="sysStream">—</b></li>
-              <li class="sys__gauge"><canvas id="loadGauge" width="48" height="48"></canvas><span>ЦПУ ЯДРА</span></li>
+              <li class="sys__gauge"><canvas id="loadGauge" width="40" height="40"></canvas><span><b id="loadPct">0%</b> ЦПУ ЯДРА</span></li>
             </ul>
           </section>
         </div>
@@ -280,7 +280,7 @@
   </div>
 
   <script src="/static/vendor/three.min.js"></script>
-  <script src="/static/three-scenes.js?v=2" defer></script>
-  <script src="/static/app.js?v=2" defer></script>
+  <script src="/static/three-scenes.js?v=3" defer></script>
+  <script src="/static/app.js?v=3" defer></script>
 </body>
 </html>

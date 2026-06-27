@@ -60,16 +60,17 @@
     ctx.fillStyle = "#6b7d90"; ctx.font = "9px sans-serif"; ctx.fillText("АЗИМУТ", cx, cy + 20);
   }
 
-  function drawGauge(sel, pct) {
+  function drawGauge(sel, pct, noText) {
     const cv = $(sel); if (!cv) return;
     const { ctx, w, h } = fit(cv);
-    const cx = w / 2, cy = h / 2, R = Math.min(w, h) / 2 - 10;
-    ctx.clearRect(0, 0, w, h); ctx.lineWidth = 9; ctx.lineCap = "round";
+    const cx = w / 2, cy = h / 2, R = Math.min(w, h) / 2 - (noText ? 5 : 10);
+    ctx.clearRect(0, 0, w, h); ctx.lineWidth = noText ? 6 : 9; ctx.lineCap = "round";
     ctx.strokeStyle = "#16222f"; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.stroke();
     const p = clamp((pct || 0) / 100, 0, 1), start = -Math.PI / 2;
     const g = ctx.createLinearGradient(0, 0, w, h); g.addColorStop(0, "#22d3ee"); g.addColorStop(1, "#34d399");
     ctx.strokeStyle = g; ctx.shadowColor = "#34d39988"; ctx.shadowBlur = 12; ctx.beginPath();
     ctx.arc(cx, cy, R, start, start + p * 6.2832); ctx.stroke(); ctx.shadowBlur = 0;
+    if (noText) return;
     ctx.fillStyle = "#e7eef6"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.font = "bold 24px monospace";
     ctx.fillText(pct != null ? `${Math.round(pct)}%` : "—", cx, cy);
   }
@@ -161,7 +162,8 @@
     if (m.outliers_rejected != null) $("#fOutliers").textContent = m.outliers_rejected;
     if (m.filters) { const pf = $("#fPF"); pf.textContent = m.filters.particle ? "АКТИВЕН" : "НАКОПЛЕНИЕ"; pf.className = m.filters.particle ? "ok" : "muted"; }
     const lp = clamp(20 + (m.n_valid % 60), 0, 99);
-    drawGauge("#loadGauge", lp);
+    drawGauge("#loadGauge", lp, true);
+    const lpEl = $("#loadPct"); if (lpEl) lpEl.textContent = lp + "%";
     // живая позиция (счисление) + метрики точности
     if (m.dr_lat != null && m.dr_lon != null) {
       $("#mapHud").hidden = false;

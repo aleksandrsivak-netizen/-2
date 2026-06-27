@@ -112,14 +112,16 @@ canvas { display: block; }
   grid-template-columns: 250px minmax(0, 1fr) 376px;
   gap: 10px;
 }
-.col-left, .col-center, .col-right { display: flex; flex-direction: column; gap: 9px; min-height: 0; min-width: 0; }
+.col-left, .col-center, .col-right { display: flex; flex-direction: column; gap: 7px; min-height: 0; min-width: 0; }
+.col-left .card--grow { overflow: hidden; }
+.col-left .mission { overflow-y: auto; }
 
 /* ------------------------------ Карточки ------------------------------ */
 .card {
   background: linear-gradient(180deg, var(--card), var(--card-2));
   border: 1px solid var(--line);
   border-radius: 12px;
-  padding: 10px 13px;
+  padding: 9px 12px;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -135,25 +137,26 @@ canvas { display: block; }
 /* ----------------------- Левая колонка -------------------------------- */
 .col-left { width: 250px; }
 
-.course { display: flex; flex-direction: column; align-items: center; gap: 2px; }
-.course #compass { width: 130px; height: 130px; }
+.course { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.course #compass { width: 122px; height: 122px; }
+.course__speed { margin-top: 2px; padding-top: 6px; border-top: 1px solid var(--line-2); width: 100%; }
 .course__speed { display: flex; align-items: baseline; gap: 5px; flex-wrap: wrap; justify-content: center; }
 .course__speed b { font-family: var(--mono); font-size: 23px; color: var(--green); }
 .course__speed span { color: var(--muted); font-size: 12px; }
 .course__speed small { width: 100%; text-align: center; font-size: 9px; letter-spacing: 2px; color: var(--dim); }
 
 .card--alt, .card--course { flex-shrink: 0; }
-.bigval { display: flex; align-items: baseline; gap: 7px; margin-top: 2px; }
-.bigval b { font-family: var(--mono); font-size: 27px; line-height: 1; }
+.bigval { display: flex; align-items: baseline; gap: 7px; margin-top: 1px; }
+.bigval b { font-family: var(--mono); font-size: 23px; line-height: 1; }
 .bigval span { color: var(--muted); font-size: 13px; }
 .bigval--green b { color: var(--green); }
-.spark { width: 100%; height: 34px; margin-top: 6px; }
+.spark { width: 100%; height: 26px; margin-top: 4px; }
 
-.mission { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.mission li { display: flex; align-items: baseline; justify-content: space-between; border-bottom: 1px solid var(--line-2); padding-bottom: 6px; }
-.mission li:last-child { border: 0; }
-.mission span { font-size: 11px; letter-spacing: .8px; color: var(--muted); }
-.mission b { font-family: var(--mono); font-size: 16px; }
+.mission { list-style: none; margin: 3px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.mission li { display: flex; align-items: baseline; justify-content: space-between; border-bottom: 1px solid var(--line-2); padding-bottom: 3px; }
+.mission li:last-child { border: 0; padding-bottom: 0; }
+.mission span { font-size: 10px; letter-spacing: .6px; color: var(--muted); }
+.mission b { font-family: var(--mono); font-size: 13.5px; }
 
 /* --------------------------- Центр: карта ----------------------------- */
 .col-center { min-width: 0; }
@@ -208,8 +211,9 @@ canvas { display: block; }
 .sys__i--filter::after { background: var(--amber); }
 .sys__i--pf::after { background: var(--cyan); }
 .sys__gauge { grid-column: 1 / -1; justify-content: center; gap: 9px; margin-top: 4px; }
-.sys__gauge canvas { width: 44px; height: 44px; }
-.sys__gauge span { font-family: var(--ui, inherit); font-size: 9.5px; letter-spacing: 1px; color: var(--dim, #5f7387); text-transform: uppercase; margin: 0; }
+.sys__gauge canvas { width: 36px; height: 36px; }
+.sys__gauge span { font-family: var(--ui, inherit); font-size: 9.5px; letter-spacing: 1px; color: var(--dim, #5f7387); text-transform: uppercase; margin: 0; display: inline-flex; align-items: baseline; gap: 6px; }
+.sys__gauge span b { font-family: var(--mono); font-size: 14px; color: var(--green); letter-spacing: 0; }
 
 /* --------------------------- Правая колонка --------------------------- */
 .col-right { width: 376px; }
