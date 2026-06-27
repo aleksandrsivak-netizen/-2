@@ -19,6 +19,10 @@ scipy==1.15.0
 matplotlib==3.10.0
 pillow==11.1.0
 
+# Реальный DEM (Copernicus GLO-30 через GDAL/vsicurl) — опционально, DEM_SOURCE=real
+rasterio==1.5.0
+pyproj==3.7.2
+
 # Tests / local verification
 pytest==9.1.1
 httpx==0.28.1

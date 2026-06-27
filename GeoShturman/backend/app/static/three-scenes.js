@@ -291,7 +291,7 @@
       for (let i = 0; i < pos.count; i++) {
         const x = pos.getX(i), z = pos.getZ(i);
         const u = x / SZ + 0.5, v = z / SZ + 0.5;
-        const f = this._field(u, v);
+        const f = this._value(u, v);
         pos.setY(i, f * H);
         const c = this._colormap(f);
         col.setRGB(c[0], c[1], c[2]); colors.push(col.r, col.g, col.b);
@@ -306,13 +306,40 @@
       // маркер пика (лучшее совпадение)
       const px = (this.peakU - 0.5) * SZ, pz = (this.peakV - 0.5) * SZ;
       const m = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 16), new THREE.MeshBasicMaterial({ color: 0xb6ff3a }));
-      m.position.set(px, this._field(this.peakU, this.peakV) * H + 0.6, pz);
+      m.position.set(px, this._value(this.peakU, this.peakV) * H + 0.6, pz);
       this.peak = m; this.scene.add(m);
+    },
+
+    // значение поверхности: реальная матрица ядра, либо синтетический пик
+    _value(u, v) {
+      if (this.surf && this.surf.length) return this._sampleSurf(u, v);
+      return this._field(u, v);
+    },
+    _sampleSurf(u, v) {
+      const z = this.surf, R = z.length, C = z[0].length;
+      const fr = THREE.MathUtils.clamp(v, 0, 1) * (R - 1), fc = THREE.MathUtils.clamp(u, 0, 1) * (C - 1);
+      const r0 = Math.floor(fr), c0 = Math.floor(fc), r1 = Math.min(R - 1, r0 + 1), c1 = Math.min(C - 1, c0 + 1);
+      const tr = fr - r0, tc = fc - c0;
+      const a = z[r0][c0] + (z[r0][c1] - z[r0][c0]) * tc;
+      const b = z[r1][c0] + (z[r1][c1] - z[r1][c0]) * tc;
+      return a + (b - a) * tr;
+    },
+
+    setSurface(z, peak) {
+      if (!z || !z.length || !z[0].length) return;
+      this.surf = z;
+      if (peak && peak.length === 2) {
+        this.peakV = THREE.MathUtils.clamp(peak[0] / (z.length - 1 || 1), 0.05, 0.95);
+        this.peakU = THREE.MathUtils.clamp(peak[1] / (z[0].length - 1 || 1), 0.05, 0.95);
+      }
+      if (this.mesh) { this.scene.remove(this.mesh); this.scene.remove(this.wire); this.scene.remove(this.peak); }
+      this._build();
     },
 
     setPeak(u, v) {
       this.peakU = THREE.MathUtils.clamp(u, 0.1, 0.9);
       this.peakV = THREE.MathUtils.clamp(v, 0.1, 0.9);
+      if (this.surf) return; // если есть реальная матрица — не трогаем синтетикой
       if (this.mesh) { this.scene.remove(this.mesh); this.scene.remove(this.wire); this.scene.remove(this.peak); }
       this._build();
     },
@@ -344,6 +371,7 @@
     setAzimuth: (az) => Terrain.setAzimuth(az),
     setCraftType: (t) => Terrain.setCraftType(t),
     setCorrPeak: (u, v) => Corr.setPeak(u, v),
+    setCorrSurface: (z, peak) => Corr.setSurface(z, peak),
     resize: () => { Terrain.resize(); Corr.resize(); },
     zoom: (s) => Terrain.zoom(s),
     resetView: () => Terrain.resetView(),

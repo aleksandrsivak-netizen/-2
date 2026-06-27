@@ -168,8 +168,17 @@
       $("#bm-az").textContent = fmt(m.azimuth_deg, 0);
       $("#m-speed").textContent = fmt(m.speed_mps, 1);
       $("#bm-spd").textContent = fmt(m.speed_mps, 1);
-      if (window.GeoScenes) { window.GeoScenes.setAzimuth(m.azimuth_deg); window.GeoScenes.setCorrPeak((m.azimuth_deg % 360) / 360, 0.5); }
+      if (window.GeoScenes) window.GeoScenes.setAzimuth(m.azimuth_deg);
     }
+    // реальная матрица корреляции из ядра → 3D-поверхность
+    if (m.heatmap && m.heatmap.z && window.GeoScenes) {
+      window.GeoScenes.setCorrSurface(m.heatmap.z, m.heatmap.peak);
+      const tag = document.querySelector(".bestmatch-tag");
+      if (tag) tag.innerHTML = "<i></i>РЕАЛЬНАЯ МАТРИЦА ЯДРА";
+    } else if (m.azimuth_deg != null && window.GeoScenes) {
+      window.GeoScenes.setCorrPeak((m.azimuth_deg % 360) / 360, 0.5);
+    }
+    if (m.dem_source) { const d = $("#fDem"); if (d) { const real = /coper|glo/i.test(m.dem_source); d.textContent = real ? "GLO-30" : "СИНТЕТ"; d.className = real ? "green" : "ok"; } }
     $("#bm-corr").textContent = fmt(m.correlation, 3);
     const confPct = m.confidence != null ? m.confidence * 100 : null;
     $("#bm-conf").textContent = fmt(confPct, 1);

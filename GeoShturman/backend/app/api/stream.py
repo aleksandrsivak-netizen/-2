@@ -209,14 +209,14 @@ class StreamHub:
                         start_x_m: float = 4000.0, start_y_m: float = 4000.0,
                         width_m: float = 8000.0, height_m: float = 8000.0,
                         resolution_m: float = 30.0, terrain_type: str = "mixed") -> None:
-        from app.core.dem import create_synthetic_dem
         from app.core.nmea import build_gpgga_sentence
+        from app.core.real_dem import provide_dem
         from app.core.simulator import generate_sensor_stream, generate_truth_trajectory
 
         loop = asyncio.get_running_loop()
-        dem = await loop.run_in_executor(None, lambda: create_synthetic_dem(
-            width_m=width_m, height_m=height_m, resolution_m=resolution_m, seed=42,
-            terrain_type=terrain_type, origin_lat_deg=ORIGIN_LAT, origin_lon_deg=ORIGIN_LON))
+        dem = await loop.run_in_executor(None, lambda: provide_dem(
+            width_m=width_m, height_m=height_m, resolution_m=resolution_m,
+            terrain_type=terrain_type, lat=ORIGIN_LAT, lon=ORIGIN_LON))
         truth = generate_truth_trajectory(
             start_x_m=start_x_m, start_y_m=start_y_m, speed_mps=speed_mps,
             azimuth_deg=heading_deg, duration_s=duration_s, sample_rate_hz=hz)
@@ -234,15 +234,64 @@ class StreamHub:
         await self.broadcast({"type": "stream_end"})
 
 
+def _dem_label() -> str:
+    try:
+        from app.core.real_dem import dem_source_label
+        return dem_source_label()
+    except Exception:
+        return "synthetic"
+
+
+def _extract_heatmap(solution: Any, max_side: int = 48) -> dict[str, Any] | None:
+    """Достаёт реальную матрицу корреляции из решения ядра, нормализует и
+    прореживает до max_side для передачи во фронт (настоящая тепловая карта)."""
+    try:
+        import numpy as _np
+        hm = getattr(solution, "heatmap", None)
+        if hm is None:
+            return None
+        a = _np.asarray(hm, dtype=float)
+        if a.ndim == 1:
+            a = a.reshape(1, -1)
+        if a.ndim != 2 or a.size == 0:
+            return None
+        finite = a[_np.isfinite(a)]
+        fill = float(finite.min()) if finite.size else 0.0
+        a = _np.nan_to_num(a, nan=fill, posinf=fill, neginf=fill)
+        mn, mx = float(a.min()), float(a.max())
+        norm = (a - mn) / (mx - mn) if mx > mn else _np.zeros_like(a)
+        R, C = norm.shape
+        rs, cs = max(1, R // max_side), max(1, C // max_side)
+        small = norm[::rs, ::cs]
+        pr, pc = _np.unravel_index(int(_np.argmax(norm)), norm.shape)
+        az = solution.metadata.get("refined_azimuth_values") if hasattr(solution, "metadata") else None
+        peak_az = None
+        if az is not None and len(_np.ravel(az)):
+            azv = _np.ravel(_np.asarray(az, dtype=float))
+            # ось азимутов обычно совпадает с одной из размерностей
+            idx = pr if len(azv) == R else (pc if len(azv) == C else None)
+            if idx is not None:
+                peak_az = round(float(azv[idx % len(azv)]), 1)
+        return {
+            "z": _np.round(small, 3).tolist(),
+            "peak": [int(pr // rs), int(pc // cs)],
+            "peak_az": peak_az,
+            "rows": int(small.shape[0]), "cols": int(small.shape[1]),
+        }
+    except Exception:
+        logger.exception("_extract_heatmap failed")
+        return None
+
+
 def _solve_window(window: list[dict[str, Any]], baro_msl: float) -> dict[str, Any] | None:
     """Синхронный пересчёт решения ядром по накопленному окну NMEA."""
     try:
-        from app.core.dem import create_synthetic_dem
         from app.core.navigation import solve_navigation
+        from app.core.real_dem import provide_dem
 
         nmea_text = "\n".join(s["raw"] for s in window)
-        dem = create_synthetic_dem(width_m=8000, height_m=8000, resolution_m=30, seed=42,
-                                   terrain_type="mixed", origin_lat_deg=ORIGIN_LAT, origin_lon_deg=ORIGIN_LON)
+        dem = provide_dem(width_m=8000, height_m=8000, resolution_m=30,
+                          terrain_type="mixed", lat=ORIGIN_LAT, lon=ORIGIN_LON)
         solution = solve_navigation(
             dem=dem, nmea_text=nmea_text, barometric_altitude_msl=baro_msl,
             sample_rate_hz=5.0, search_radius_m=900.0, coarse_step_m=250.0, fine_step_m=75.0,
@@ -264,6 +313,8 @@ def _solve_window(window: list[dict[str, Any]], baro_msl: float) -> dict[str, An
             "lat": lat, "lon": lon, "altitude_msl": round(baro_msl, 1),
             "n_samples": len(window),
             "profile": {"radio": radio[-160:], "terrain": terrain[-160:]},
+            "heatmap": _extract_heatmap(solution),
+            "dem_source": _dem_label(),
             "quality": solution.quality,
         }
     except Exception:
