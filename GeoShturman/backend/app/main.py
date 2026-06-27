@@ -58,7 +58,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 def index():
     index_path = settings.static_dir / "index.html"
     if index_path.exists():
-        return FileResponse(index_path)
+        # без кэша, чтобы правки UI всегда подхватывались (жюри/демо)
+        return FileResponse(index_path, headers={"Cache-Control": "no-cache, must-revalidate"})
     return HTMLResponse(
         """
         <!doctype html>

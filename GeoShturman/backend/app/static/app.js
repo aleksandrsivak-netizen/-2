@@ -161,7 +161,7 @@
     if (m.outliers_rejected != null) $("#fOutliers").textContent = m.outliers_rejected;
     if (m.filters) { const pf = $("#fPF"); pf.textContent = m.filters.particle ? "АКТИВЕН" : "НАКОПЛЕНИЕ"; pf.className = m.filters.particle ? "ok" : "muted"; }
     const lp = clamp(20 + (m.n_valid % 60), 0, 99);
-    $("#loadPct").textContent = lp + "%"; drawGauge("#loadGauge", lp);
+    drawGauge("#loadGauge", lp);
     // живая позиция (счисление) + метрики точности
     if (m.dr_lat != null && m.dr_lon != null) {
       $("#mapHud").hidden = false;
@@ -217,7 +217,7 @@
 
   function handleMessage(m) {
     switch (m.type) {
-      case "hello": setStreamState("ОНЛАЙН", true); if (m.last_solution) applySolution(m.last_solution); break;
+      case "hello": setStreamState("ОНЛАЙН", true); break;
       case "telemetry": applyTelemetry(m); break;
       case "solution": applySolution(m); break;
       case "stream_start":

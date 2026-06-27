@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark" />
   <title>ГЕОШТУРМАН · автономная навигация (real-time)</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%2334d399' d='M16 3 4 16l12 13 12-13z'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=2" />
 </head>
 <body>
   <div class="app">
@@ -131,14 +131,14 @@
           <section class="card card--sys">
             <header class="card__head"><h2 class="card__t">Фильтры и системы</h2></header>
             <ul class="sys">
-              <li><i class="sys__i sys__i--radio"></i><span>РАДИОВЫСОТОМЕР</span><b class="ok">OK</b></li>
-              <li><i class="sys__i sys__i--dem"></i><span>DEM ИСТОЧНИК</span><b class="ok" id="fDem">OK</b></li>
-              <li><i class="sys__i sys__i--filter"></i><span>ХАМПЕЛЬ · ВЫБРОСЫ</span><b class="green" id="fOutliers">0</b></li>
-              <li><i class="sys__i sys__i--kalman"></i><span>КАЛМАН-ФИЛЬТР</span><b class="ok" id="kalmanState">АКТИВЕН</b></li>
-              <li><i class="sys__i sys__i--pf"></i><span>ПАРТИКЛФИЛЬТР</span><b class="ok" id="fPF">ОЖИДАНИЕ</b></li>
-              <li><i class="sys__i sys__i--ins"></i><span>ИНС · СЧИСЛЕНИЕ</span><b class="ok">OK</b></li>
+              <li><i class="sys__i sys__i--radio"></i><span>РАДИОВЫСОТ.</span><b class="ok">OK</b></li>
+              <li><i class="sys__i sys__i--dem"></i><span>DEM</span><b class="ok" id="fDem">OK</b></li>
+              <li><i class="sys__i sys__i--filter"></i><span>ВЫБРОСЫ</span><b class="green" id="fOutliers">0</b></li>
+              <li><i class="sys__i sys__i--kalman"></i><span>КАЛМАН</span><b class="ok" id="kalmanState">АКТИВЕН</b></li>
+              <li><i class="sys__i sys__i--pf"></i><span>ПАРТИКЛ.</span><b class="ok" id="fPF">ОЖИДАНИЕ</b></li>
+              <li><i class="sys__i sys__i--ins"></i><span>ИНС / DR</span><b class="ok">OK</b></li>
               <li><i class="sys__i sys__i--cpu"></i><span>ПОТОК</span><b class="green" id="sysStream">—</b></li>
-              <li class="sys__gauge"><canvas id="loadGauge" width="56" height="56"></canvas><span id="loadPct">0%</span></li>
+              <li class="sys__gauge"><canvas id="loadGauge" width="48" height="48"></canvas><span>ЦПУ ЯДРА</span></li>
             </ul>
           </section>
         </div>
@@ -280,7 +280,7 @@
   </div>
 
   <script src="/static/vendor/three.min.js"></script>
-  <script src="/static/three-scenes.js" defer></script>
-  <script src="/static/app.js" defer></script>
+  <script src="/static/three-scenes.js?v=2" defer></script>
+  <script src="/static/app.js?v=2" defer></script>
 </body>
 </html>
