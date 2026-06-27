@@ -61,6 +61,9 @@ class CorrelationResult:
     discrimination_ratio: float
     roughness_score: float
     observability_score: float
+    reference_profile_std_m: float
+    reference_profile_range_m: float
+    low_observability: bool
     confidence_score: float
     ambiguous_match: bool
     mse_m2: float
@@ -82,6 +85,9 @@ class CorrelationResult:
             "discrimination_ratio": self.discrimination_ratio,
             "roughness_score": self.roughness_score,
             "observability_score": self.observability_score,
+            "reference_profile_std_m": self.reference_profile_std_m,
+            "reference_profile_range_m": self.reference_profile_range_m,
+            "low_observability": self.low_observability,
             "confidence_score": self.confidence_score,
             "ambiguous_match": self.ambiguous_match,
             "mse_m2": self.mse_m2,
@@ -150,4 +156,3 @@ class AccuracyMetrics:
             "observability_score": self.observability_score,
             **self.extra,
         }
-

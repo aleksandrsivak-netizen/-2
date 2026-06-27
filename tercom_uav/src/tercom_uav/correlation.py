@@ -86,6 +86,18 @@ def _score_references(references: np.ndarray, observed: np.ndarray) -> np.ndarra
     return scores
 
 
+def _reference_profile_stats(references: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    reference_std = np.full(references.shape[0], np.nan, dtype=float)
+    reference_range = np.full(references.shape[0], np.nan, dtype=float)
+    for idx, row in enumerate(np.asarray(references, dtype=float)):
+        values = row[np.isfinite(row)]
+        if values.size < 3:
+            continue
+        reference_std[idx] = float(np.std(values))
+        reference_range[idx] = float(np.max(values) - np.min(values))
+    return reference_std, reference_range
+
+
 def _search_grid(
     dem: DEMGrid,
     observed_profile_m: np.ndarray,
@@ -94,16 +106,34 @@ def _search_grid(
     shifts_m: np.ndarray,
     center_x_m: float,
     center_y_m: float,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     heatmap = np.full((azimuths_deg.size, shifts_m.size), np.nan, dtype=float)
+    reference_std = np.full_like(heatmap, np.nan, dtype=float)
+    reference_range = np.full_like(heatmap, np.nan, dtype=float)
     for azimuth_idx, azimuth_deg in enumerate(azimuths_deg):
         shifted_distances = shifts_m[:, None] + distances_m[None, :]
         azimuth_rad = np.deg2rad(azimuth_deg)
         x = center_x_m + np.sin(azimuth_rad) * shifted_distances
         y = center_y_m + np.cos(azimuth_rad) * shifted_distances
         references = np.asarray(dem.sample(x, y), dtype=float)
+        reference_std[azimuth_idx, :], reference_range[azimuth_idx, :] = _reference_profile_stats(references)
         heatmap[azimuth_idx, :] = _score_references(references, observed_profile_m)
-    return heatmap
+    return heatmap, reference_std, reference_range
+
+
+def _safe_stat_at(map_values: np.ndarray, index: tuple[int, int], fallback: float = 0.0) -> float:
+    value = float(map_values[index])
+    return value if np.isfinite(value) else fallback
+
+
+def _low_reference_observability(
+    reference_std_m: float,
+    reference_range_m: float,
+    cfg: CorrelationConfig,
+) -> bool:
+    if not np.isfinite(reference_std_m) or not np.isfinite(reference_range_m):
+        return True
+    return reference_std_m < cfg.min_reference_std_m or reference_range_m < cfg.min_reference_range_m
 
 
 def _circular_angle_delta_deg(values_deg: np.ndarray, reference_deg: float) -> np.ndarray:
@@ -154,28 +184,34 @@ def correlate_profile(
     if cfg.coarse_to_fine:
         coarse_az = _azimuth_grid(cfg.coarse_azimuth_step_deg)
         coarse_shifts = _make_grid(cfg.shift_min_m, cfg.shift_max_m, cfg.coarse_shift_step_m)
-        coarse_heatmap = _search_grid(dem, observed, distances, coarse_az, coarse_shifts, center_x_m, center_y_m)
-        coarse_best = np.unravel_index(np.nanargmax(coarse_heatmap), coarse_heatmap.shape)
-        coarse_best_az = coarse_az[coarse_best[0]]
-        coarse_best_shift = coarse_shifts[coarse_best[1]]
-        azimuths = np.mod(
-            _make_grid(
-                coarse_best_az - cfg.fine_azimuth_radius_deg,
-                coarse_best_az + cfg.fine_azimuth_radius_deg,
-                cfg.azimuth_step_deg,
-            ),
-            360.0,
-        )
-        shifts = _make_grid(
-            max(cfg.shift_min_m, coarse_best_shift - cfg.fine_shift_radius_m),
-            min(cfg.shift_max_m, coarse_best_shift + cfg.fine_shift_radius_m),
-            cfg.shift_step_m,
-        )
+        coarse_heatmap, _, _ = _search_grid(dem, observed, distances, coarse_az, coarse_shifts, center_x_m, center_y_m)
+        if np.all(~np.isfinite(coarse_heatmap)):
+            azimuths = coarse_az
+            shifts = coarse_shifts
+        else:
+            coarse_best = np.unravel_index(np.nanargmax(coarse_heatmap), coarse_heatmap.shape)
+            coarse_best_az = coarse_az[coarse_best[0]]
+            coarse_best_shift = coarse_shifts[coarse_best[1]]
+            azimuths = np.mod(
+                _make_grid(
+                    coarse_best_az - cfg.fine_azimuth_radius_deg,
+                    coarse_best_az + cfg.fine_azimuth_radius_deg,
+                    cfg.azimuth_step_deg,
+                ),
+                360.0,
+            )
+            shifts = _make_grid(
+                max(cfg.shift_min_m, coarse_best_shift - cfg.fine_shift_radius_m),
+                min(cfg.shift_max_m, coarse_best_shift + cfg.fine_shift_radius_m),
+                cfg.shift_step_m,
+            )
     else:
         azimuths = _azimuth_grid(cfg.azimuth_step_deg)
         shifts = _make_grid(cfg.shift_min_m, cfg.shift_max_m, cfg.shift_step_m)
 
-    heatmap = _search_grid(dem, observed, distances, azimuths, shifts, center_x_m, center_y_m)
+    heatmap, reference_std_map, reference_range_map = _search_grid(
+        dem, observed, distances, azimuths, shifts, center_x_m, center_y_m
+    )
     roughness = terrain_roughness_score(observed)
     if np.all(~np.isfinite(heatmap)):
         # Degenerate case: either the search grid left the DEM bounds, or the
@@ -192,6 +228,9 @@ def correlate_profile(
             discrimination_ratio=0.0,
             roughness_score=roughness,
             observability_score=0.0,
+            reference_profile_std_m=0.0,
+            reference_profile_range_m=0.0,
+            low_observability=True,
             confidence_score=0.0,
             ambiguous_match=True,
             mse_m2=float("nan"),
@@ -210,6 +249,9 @@ def correlate_profile(
     best_azimuth = float(azimuths[best_index[0]] % 360.0)
     best_shift = float(shifts[best_index[1]])
     reference = dem.sample_along(center_x_m, center_y_m, best_azimuth, best_shift + distances)
+    reference_std = _safe_stat_at(reference_std_map, best_index)
+    reference_range = _safe_stat_at(reference_range_map, best_index)
+    low_observability = _low_reference_observability(reference_std, reference_range, cfg)
     heatmap_std = float(np.nanstd(heatmap)) if np.any(np.isfinite(heatmap)) else 0.0
     confidence, ambiguous, observability, score_gap = confidence_from_scores(
         best_score=best_score,
@@ -220,6 +262,7 @@ def correlate_profile(
         min_observability=cfg.min_observability,
         heatmap_std=heatmap_std,
         min_relative_gap=cfg.min_relative_gap,
+        low_observability=low_observability,
     )
     discrimination_ratio = float(score_gap / max(abs(best_score), 1e-9))
 
@@ -231,6 +274,9 @@ def correlate_profile(
         discrimination_ratio=discrimination_ratio,
         roughness_score=roughness,
         observability_score=observability,
+        reference_profile_std_m=reference_std,
+        reference_profile_range_m=reference_range,
+        low_observability=low_observability,
         confidence_score=confidence,
         ambiguous_match=ambiguous,
         mse_m2=mse(observed, reference),

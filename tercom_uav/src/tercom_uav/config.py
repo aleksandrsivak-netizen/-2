@@ -75,6 +75,8 @@ class CorrelationConfig:
     min_score_gap: float = 0.05
     min_relative_gap: float = 0.75
     min_observability: float = 0.2
+    min_reference_std_m: float = 2.0
+    min_reference_range_m: float = 10.0
 
     # Speed-hypothesis search: resolves the speed<->distance-scale
     # circularity (radio altitude alone gives no metric distance scale, but
@@ -97,6 +99,8 @@ class CorrelationConfig:
             raise ValueError("shift_min_m must be lower than shift_max_m.")
         if self.sample_spacing_m <= 0:
             raise ValueError("sample_spacing_m must be positive.")
+        if self.min_reference_std_m < 0 or self.min_reference_range_m < 0:
+            raise ValueError("reference observability thresholds must be non-negative.")
         if self.speed_scale_min <= 0 or self.speed_scale_min > self.speed_scale_max:
             raise ValueError("speed_scale_min must be positive and <= speed_scale_max.")
         if self.speed_scale_step <= 0:

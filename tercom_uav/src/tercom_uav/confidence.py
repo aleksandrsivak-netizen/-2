@@ -31,6 +31,7 @@ def confidence_from_scores(
     min_observability: float = 0.2,
     heatmap_std: float | None = None,
     min_relative_gap: float = 0.75,
+    low_observability: bool = False,
 ) -> tuple[float, bool, float, float]:
     """Compute confidence and ambiguity from correlation diagnostics.
 
@@ -51,6 +52,8 @@ def confidence_from_scores(
 
     score_gap = max(float(best_score - second_best_score), 0.0)
     observability = observability_from_roughness(roughness_m)
+    if low_observability:
+        observability = min(observability, min_observability * 0.5)
     corr_component = np.clip((best_score + 1.0) * 0.5, 0.0, 1.0)
 
     if heatmap_std is not None and heatmap_std > 1e-9:
@@ -66,8 +69,10 @@ def confidence_from_scores(
         or score_gap < min_score_gap
         or relative_gap < min_relative_gap
         or observability < min_observability
+        or low_observability
     )
     if ambiguous:
         confidence = min(confidence, 0.45)
+    if low_observability:
+        confidence = min(confidence, 0.25)
     return confidence, ambiguous, observability, score_gap
-

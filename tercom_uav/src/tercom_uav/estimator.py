@@ -87,6 +87,8 @@ def _dynamic_shift_config(dem: DEMGrid, config: CorrelationConfig) -> Correlatio
         min_score_gap=config.min_score_gap,
         min_relative_gap=config.min_relative_gap,
         min_observability=config.min_observability,
+        min_reference_std_m=config.min_reference_std_m,
+        min_reference_range_m=config.min_reference_range_m,
         speed_search_enabled=config.speed_search_enabled,
         speed_scale_min=config.speed_scale_min,
         speed_scale_max=config.speed_scale_max,
@@ -127,6 +129,8 @@ def _cheap_screening_config(cfg: CorrelationConfig) -> CorrelationConfig:
         min_score_gap=cfg.min_score_gap,
         min_relative_gap=cfg.min_relative_gap,
         min_observability=cfg.min_observability,
+        min_reference_std_m=cfg.min_reference_std_m,
+        min_reference_range_m=cfg.min_reference_range_m,
         speed_search_enabled=False,
     )
 
