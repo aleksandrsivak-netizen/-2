@@ -5,3 +5,4 @@ __pycache__/
 venv/
 *.log
 **/backend/app/outputs/*/
+independent_test/_artifacts/

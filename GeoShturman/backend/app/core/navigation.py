@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 from .confidence import compute_navigation_confidence, terrain_informativeness
 from .correlation import CandidateResult, coarse_search, refine_search_around_candidates
@@ -47,6 +51,48 @@ def solve_navigation(
     nmea_text: str,
     barometric_altitude_msl: float = 1500.0,
     sample_rate_hz: float = 5.0,
+    **kwargs,
+):
+    """Навигационное решение по NMEA-радиовысоте.
+
+    ЕДИНОЕ ГОРЛЫШКО: все потребители (live-стрим, demo-пайплайн, /solve)
+    зовут именно эту функцию. По умолчанию (NAV_ENGINE != "native") расчёт
+    делегируется ЯДРУ ТЕАРКОМА через app.core.tercom_bridge, поэтому
+    визуализация показывает результат алгоритма tercom_uav без правок
+    фронтенда. При любой ошибке моста — прозрачный откат на родной движок.
+    Принудительно вернуть родной движок: переменная окружения
+    NAV_ENGINE=native.
+    """
+
+    engine = os.environ.get("NAV_ENGINE", "tercom").strip().lower()
+    if engine != "native":
+        try:
+            from app.core.tercom_bridge import solve_navigation_via_tercom
+
+            return solve_navigation_via_tercom(
+                dem=dem,
+                nmea_text=nmea_text,
+                barometric_altitude_msl=barometric_altitude_msl,
+                sample_rate_hz=sample_rate_hz,
+                **kwargs,
+            )
+        except Exception:
+            logger.exception("tercom bridge failed; falling back to native solver")
+
+    return _solve_navigation_native(
+        dem=dem,
+        nmea_text=nmea_text,
+        barometric_altitude_msl=barometric_altitude_msl,
+        sample_rate_hz=sample_rate_hz,
+        **kwargs,
+    )
+
+
+def _solve_navigation_native(
+    dem: DEMData,
+    nmea_text: str,
+    barometric_altitude_msl: float = 1500.0,
+    sample_rate_hz: float = 5.0,
     search_center_x_m: float | None = None,
     search_center_y_m: float | None = None,
     search_radius_m: float = 2000.0,
@@ -62,7 +108,7 @@ def solve_navigation(
     parallel_jobs: int | None = 1,
     compensate_baro_drift: bool = True,
 ) -> NavigationSolution:
-    """Estimate location, speed, and track direction from NMEA radio altitude."""
+    """Родной грид-корреляционный решатель (оставлен как fallback и эталон)."""
 
     parsed = parse_nmea_text(nmea_text)
     valid_altitudes = [item.altitude_m for item in parsed if item.parsed_ok and item.altitude_m is not None]

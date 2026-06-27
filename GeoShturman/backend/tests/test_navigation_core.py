@@ -5,7 +5,11 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.dem import create_synthetic_dem
-from app.core.navigation import solve_navigation
+# Эти тесты проверяют РОДНОЙ грид-корреляционный решатель: они передают его
+# специфичные параметры (search_center/radius, шаги перебора) и сверяют
+# metadata. Публичный solve_navigation по умолчанию делегирует расчёт ядру
+# теаркома (через мост), поэтому здесь зовём родной движок напрямую.
+from app.core.navigation import _solve_navigation_native as solve_navigation
 from app.core.simulator import (
     generate_nmea_from_radio_profile,
     generate_radio_altimeter_profile,
