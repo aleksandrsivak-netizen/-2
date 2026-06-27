@@ -146,13 +146,13 @@ function readPayload() {
     speed: numberOrDefault(data.get("speed"), 55),
     speedHint: numberOrDefault(data.get("speed"), 55),
     heading: numberOrDefault(data.get("heading"), 73),
-    duration: numberOrDefault(data.get("duration"), 180),
+    duration: numberOrDefault(data.get("duration"), 90),
     hz: numberOrDefault(data.get("hz"), 5),
     noiseStd: numberOrDefault(data.get("noiseStd"), 2.5),
     outlierProb: numberOrDefault(data.get("outlierProb"), 0),
     dropoutProb: numberOrDefault(data.get("dropoutProb"), 0),
     driftMps: numberOrDefault(data.get("driftMps"), 0),
-    shiftStep: numberOrDefault(data.get("shiftStep"), 30),
+    shiftStep: numberOrDefault(data.get("shiftStep"), 120),
     randomSeed: numberOrDefault(data.get("randomSeed"), 42),
     ...toggles,
     coarseToFine: toggles.strictMode ? false : Boolean(toggles.coarseToFine),
@@ -214,7 +214,7 @@ function setMode(mode) {
   fieldGroups.seed.classList.toggle("hidden", isLocalize);
   modeHelp.textContent = isLocalize
     ? "Локализация читает готовый NMEA-файл, строит профиль рельефа и ищет его на выбранной карте."
-    : "Демо создаёт истинную траекторию, радиовысотомерный NMEA-поток и сразу запускает локализацию.";
+    : "Демо использует быстрый обзорный поиск; строгий full-grid режим можно включить отдельным флагом.";
 }
 
 function setRouteMode(mode) {

@@ -85,7 +85,7 @@
             </label>
             <label id="durationGroup">
               <span>Длительность, с</span>
-              <input name="duration" type="number" value="180" step="10" min="5" />
+              <input name="duration" type="number" value="90" step="10" min="5" />
             </label>
             <label id="hzGroup">
               <span>Частота NMEA, Гц</span>
@@ -109,7 +109,7 @@
             </label>
             <label>
               <span>Шаг сдвига, м</span>
-              <input name="shiftStep" type="number" value="30" step="10" min="5" />
+              <input name="shiftStep" type="number" value="120" step="30" min="30" />
             </label>
             <label id="seedGroup">
               <span>Seed шума</span>
@@ -119,8 +119,8 @@
 
           <div class="toggle-grid">
             <label class="toggle-row">
-              <input name="strictMode" type="checkbox" checked />
-              <span>Строгий режим ТЗ: 0–360° с шагом 1°</span>
+              <input name="strictMode" type="checkbox" />
+              <span>Строгий full-grid режим: 0–360° с шагом 1°</span>
             </label>
             <label class="toggle-row">
               <input name="useKalman" type="checkbox" />

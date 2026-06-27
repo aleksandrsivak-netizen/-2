@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from tercom_uav.cli import _correlation_config, _json_default, _load_dem, _save_run_artifacts, _write_json
-from tercom_uav.config import KalmanConfig, SimulationConfig, ensure_output_dir
+from tercom_uav.config import CorrelationConfig, KalmanConfig, SimulationConfig, ensure_output_dir
 from tercom_uav.estimator import localize_profile
 from tercom_uav.nmea import read_gpgga_file
 from tercom_uav.profiles import build_terrain_profile
@@ -212,6 +212,27 @@ def _route_number(payload: dict[str, Any], key: str, fallback: float) -> float:
     return float(value)
 
 
+def _web_correlation_config(dem: DEMGrid, payload: dict[str, Any], strict_mode: bool) -> CorrelationConfig:
+    """Build a correlation config suitable for interactive dashboard runs."""
+
+    if strict_mode:
+        return _correlation_config(
+            dem,
+            shift_step_m=float(payload.get("shiftStep", 30.0)),
+            coarse_to_fine=False,
+        )
+
+    resolution_x, resolution_y = dem.resolution_m
+    sample_spacing = max(10.0, float(np.median([resolution_x, resolution_y])))
+    return CorrelationConfig(
+        azimuth_step_deg=float(payload.get("azimuthStep", 5.0)),
+        shift_step_m=float(payload.get("shiftStep", 120.0)),
+        sample_spacing_m=sample_spacing,
+        coarse_to_fine=bool(payload.get("coarseToFine", False)),
+        speed_search_enabled=False,
+    )
+
+
 def _route_base_config(payload: dict[str, Any], dem_path: Path | None, synthetic_flat: bool, map_id: str) -> dict[str, Any]:
     return {
         "map_id": map_id,
@@ -274,12 +295,8 @@ def run_demo_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         drift_mps=float(payload.get("driftMps", 0.0)),
         random_seed=int(payload.get("randomSeed", 42)),
     )
-    strict_mode = bool(payload.get("strictMode", True))
-    correlation_config = _correlation_config(
-        dem_grid,
-        shift_step_m=float(payload.get("shiftStep", 30.0)),
-        coarse_to_fine=False if strict_mode else bool(payload.get("coarseToFine", False)),
-    )
+    strict_mode = bool(payload.get("strictMode", False))
+    correlation_config = _web_correlation_config(dem_grid, payload, strict_mode)
     kalman_config = KalmanConfig(enabled=bool(payload.get("useKalman", False)))
 
     simulation = simulate_flight(dem_grid, sim_config)
@@ -327,12 +344,8 @@ def run_localize_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     speed_hint = float(payload.get("speedHint", payload.get("speed", 55.0)))
     profile = build_terrain_profile(records, baro_alt)
     truth_frame = pd.read_csv(truth_path) if truth_path and truth_path.exists() else None
-    strict_mode = bool(payload.get("strictMode", True))
-    correlation_config = _correlation_config(
-        dem_grid,
-        shift_step_m=float(payload.get("shiftStep", 30.0)),
-        coarse_to_fine=False if strict_mode else bool(payload.get("coarseToFine", False)),
-    )
+    strict_mode = bool(payload.get("strictMode", False))
+    correlation_config = _web_correlation_config(dem_grid, payload, strict_mode)
     kalman_config = KalmanConfig(enabled=bool(payload.get("useKalman", False)))
     localization = localize_profile(
         dem=dem_grid,
@@ -472,12 +485,8 @@ def run_route_localization_from_payload(payload: dict[str, Any]) -> dict[str, An
     baro_alt = float(route_payload.get("config", {}).get("baro_alt_msl", 1500.0))
     profile = build_terrain_profile(records, baro_alt)
     speed_hint = float(route_payload.get("route", {}).get("mean_speed_mps", payload.get("speedHint", 55.0)))
-    strict_mode = bool(payload.get("strictMode", True))
-    correlation_config = _correlation_config(
-        dem_grid,
-        shift_step_m=_route_number(payload, "shiftStep", 30.0),
-        coarse_to_fine=False if strict_mode else bool(payload.get("coarseToFine", False)),
-    )
+    strict_mode = bool(payload.get("strictMode", False))
+    correlation_config = _web_correlation_config(dem_grid, payload, strict_mode)
     kalman_config = KalmanConfig(enabled=bool(payload.get("useKalman", False)))
     localization = localize_profile(
         dem=dem_grid,
