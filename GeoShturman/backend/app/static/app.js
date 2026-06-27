@@ -162,6 +162,14 @@
     if (m.filters) { const pf = $("#fPF"); pf.textContent = m.filters.particle ? "АКТИВЕН" : "НАКОПЛЕНИЕ"; pf.className = m.filters.particle ? "ok" : "muted"; }
     const lp = clamp(20 + (m.n_valid % 60), 0, 99);
     $("#loadPct").textContent = lp + "%"; drawGauge("#loadGauge", lp);
+    // живая позиция (счисление) + метрики точности
+    if (m.dr_lat != null && m.dr_lon != null) {
+      $("#mapHud").hidden = false;
+      $("#fp-lat").textContent = fmt(m.dr_lat, 4); $("#fp-lon").textContent = fmt(m.dr_lon, 4);
+      $("#fp-alt").textContent = fmt(m.baro_msl, 0);
+    }
+    if (m.cep50_m != null) $("#m-cep").textContent = `${fmt(m.cep50_m, 0)} / ${fmt(m.cep95_m, 0)} м`;
+    if (m.along_track_m != null) $("#m-axt").textContent = `${fmt(m.along_track_m, 0)} / ${fmt(m.cross_track_m, 0)} м`;
   }
 
   function applySolution(m) {
@@ -187,15 +195,10 @@
     $("#m-acc").textContent = confPct != null ? fmt(confPct, 1) + "%" : "—";
     drawGauge("#confGauge", confPct);
     if (m.profile && m.profile.radio && m.profile.radio.length) drawProfile(m.profile.radio, m.profile.terrain || []);
-    if (m.lat != null && m.lon != null) {
-      $("#mapHud").hidden = false;
-      $("#fp-lat").textContent = fmt(m.lat, 4); $("#fp-lon").textContent = fmt(m.lon, 4);
-      $("#fp-alt").textContent = fmt(m.altitude_msl, 0); $("#fp-acc").textContent = fmt(confPct, 1);
-    }
-    // метрики точности / производительности / режимы
-    if (m.cep50_m != null) $("#m-cep").textContent = `${fmt(m.cep50_m, 0)} / ${fmt(m.cep95_m, 0)} м`;
-    if (m.along_track_m != null) $("#m-axt").textContent = `${fmt(m.along_track_m, 0)} / ${fmt(m.cross_track_m, 0)} м`;
-    if (m.solve_ms != null) { const e = $("#m-ms"); e.textContent = `${fmt(m.solve_ms, 0)} мс`; e.className = m.solve_ms < 1500 ? "green" : "ok"; }
+    // позицию ведёт телеметрия (счисление); здесь — только точность фиксации
+    if (confPct != null) $("#fp-acc").textContent = fmt(confPct, 1);
+    // производительность / режимы (точность CEP — из телеметрии по DR)
+    if (m.solve_ms != null) { const e = $("#m-ms"); e.textContent = `${fmt(m.solve_ms, 0)} мс`; e.className = m.solve_ms < 5000 ? "green" : "warn"; }
     if (m.mode) { const e = $("#m-mode"); e.textContent = m.mode === "DR" ? "DR (счисление)" : "TRN"; e.className = m.mode === "DR" ? "warn" : "green"; }
     if (m.integrity) { const e = $("#m-integ"); e.textContent = m.integrity; e.className = m.integrity === "OK" ? "green" : "warn"; }
     state.lastSol = m;

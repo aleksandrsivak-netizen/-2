@@ -75,7 +75,7 @@ def load_real_dem(lat: float, lon: float, width_m: float, height_m: float,
 
 
 def provide_dem(width_m: float, height_m: float, resolution_m: float,
-                terrain_type: str = "mixed", lat: float = 56.10, lon: float = 37.20) -> DEMData:
+                terrain_type: str = "mixed", lat: float = 67.75, lon: float = 33.70) -> DEMData:
     """Единая точка получения DEM: реальный (если DEM_SOURCE=real) или синтетический."""
     if os.environ.get("DEM_SOURCE", "synthetic").lower() == "real":
         try:
