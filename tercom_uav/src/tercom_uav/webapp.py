@@ -279,6 +279,7 @@ def run_demo_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         dem_grid,
         shift_step_m=float(payload.get("shiftStep", 30.0)),
         coarse_to_fine=False if strict_mode else bool(payload.get("coarseToFine", False)),
+        quality=str(payload.get("qualityMode", "balanced")),
     )
     kalman_config = KalmanConfig(enabled=bool(payload.get("useKalman", False)))
 
@@ -332,6 +333,7 @@ def run_localize_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         dem_grid,
         shift_step_m=float(payload.get("shiftStep", 30.0)),
         coarse_to_fine=False if strict_mode else bool(payload.get("coarseToFine", False)),
+        quality=str(payload.get("qualityMode", "balanced")),
     )
     kalman_config = KalmanConfig(enabled=bool(payload.get("useKalman", False)))
     localization = localize_profile(
@@ -477,6 +479,7 @@ def run_route_localization_from_payload(payload: dict[str, Any]) -> dict[str, An
         dem_grid,
         shift_step_m=_route_number(payload, "shiftStep", 30.0),
         coarse_to_fine=False if strict_mode else bool(payload.get("coarseToFine", False)),
+        quality=str(payload.get("qualityMode", "balanced")),
     )
     kalman_config = KalmanConfig(enabled=bool(payload.get("useKalman", False)))
     localization = localize_profile(
