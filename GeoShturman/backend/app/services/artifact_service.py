@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -68,9 +69,19 @@ def safe_artifact_path(run_id: str, filename: str) -> Path:
     return candidate
 
 
+def make_json_safe(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: make_json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [make_json_safe(item) for item in value]
+    return value
+
+
 def save_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(make_json_safe(data), ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
 
 
 def build_artifact_links(run_id: str) -> dict[str, str]:
