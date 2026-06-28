@@ -6,3 +6,6 @@ venv/
 *.log
 **/backend/app/outputs/*/
 independent_test/_artifacts/
+tercom_uav/outputs/*
+!tercom_uav/outputs/.gitkeep
+**/mpl_cache/
