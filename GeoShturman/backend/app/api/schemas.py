@@ -20,6 +20,7 @@ class DemoRunRequest(BaseModel):
     enable_kalman: bool = True
     seed: int | None = 42
     terrain_type: str = Field(default="mixed")
+    tercom_quality_mode: str = Field(default="balanced", pattern="^(fast|balanced|accurate)$")
 
 
 class TruthState(BaseModel):
@@ -98,6 +99,7 @@ class NavigationSolveRequest(BaseModel):
     enable_kalman: bool = True
     terrain_type: str = Field(default="mixed")
     parallel_jobs: int | None = 1
+    tercom_quality_mode: str = Field(default="balanced", pattern="^(fast|balanced|accurate)$")
 
 
 class AutonomousDemoRequest(BaseModel):
