@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import time
 
 import numpy as np
 
 from tercom_uav.confidence import confidence_from_scores, terrain_roughness_score
-from tercom_uav.config import CorrelationConfig
+from tercom_uav.config import CorrelationConfig, correlation_config_for_quality
 from tercom_uav.dem import DEMGrid
 from tercom_uav.types import CorrelationResult
 
@@ -61,11 +62,17 @@ def _azimuth_grid(step_deg: float) -> np.ndarray:
     return np.arange(count, dtype=float) * step_deg
 
 
-def _score_references(references: np.ndarray, observed: np.ndarray) -> np.ndarray:
+def _normalized_observed(observed: np.ndarray) -> np.ndarray | None:
     observed_centered = observed - np.mean(observed)
     observed_std = np.std(observed_centered)
-    scores = np.full(references.shape[0], np.nan, dtype=float)
     if observed_std <= 1e-12:
+        return None
+    return observed_centered / observed_std
+
+
+def _score_references(references: np.ndarray, observed_normalized: np.ndarray | None) -> np.ndarray:
+    scores = np.full(references.shape[0], np.nan, dtype=float)
+    if observed_normalized is None:
         return np.nan_to_num(scores, nan=0.0)
 
     valid_rows = np.isfinite(references).all(axis=1)
@@ -79,7 +86,7 @@ def _score_references(references: np.ndarray, observed: np.ndarray) -> np.ndarra
     row_scores = np.full(refs.shape[0], np.nan, dtype=float)
     row_scores[nonflat] = np.mean(
         (refs_centered[nonflat] / refs_std[nonflat, None])
-        * (observed_centered / observed_std),
+        * observed_normalized,
         axis=1,
     )
     scores[np.flatnonzero(valid_rows)] = row_scores
@@ -94,16 +101,33 @@ def _search_grid(
     shifts_m: np.ndarray,
     center_x_m: float,
     center_y_m: float,
-) -> np.ndarray:
+) -> tuple[np.ndarray, dict[str, float | int]]:
+    started = time.perf_counter()
     heatmap = np.full((azimuths_deg.size, shifts_m.size), np.nan, dtype=float)
+    shifted_distances = shifts_m[:, None] + distances_m[None, :]
+    observed_normalized = _normalized_observed(observed_profile_m)
+    sample_time_s = 0.0
+    score_time_s = 0.0
     for azimuth_idx, azimuth_deg in enumerate(azimuths_deg):
-        shifted_distances = shifts_m[:, None] + distances_m[None, :]
         azimuth_rad = np.deg2rad(azimuth_deg)
         x = center_x_m + np.sin(azimuth_rad) * shifted_distances
         y = center_y_m + np.cos(azimuth_rad) * shifted_distances
+        sample_started = time.perf_counter()
         references = np.asarray(dem.sample(x, y), dtype=float)
-        heatmap[azimuth_idx, :] = _score_references(references, observed_profile_m)
-    return heatmap
+        sample_time_s += time.perf_counter() - sample_started
+        score_started = time.perf_counter()
+        heatmap[azimuth_idx, :] = _score_references(references, observed_normalized)
+        score_time_s += time.perf_counter() - score_started
+    total_time_s = time.perf_counter() - started
+    return heatmap, {
+        "azimuth_count": int(azimuths_deg.size),
+        "shift_count": int(shifts_m.size),
+        "sample_count": int(distances_m.size),
+        "hypotheses": int(azimuths_deg.size * shifts_m.size),
+        "search_time_s": total_time_s,
+        "dem_sample_time_s": sample_time_s,
+        "correlation_time_s": score_time_s,
+    }
 
 
 def _circular_angle_delta_deg(values_deg: np.ndarray, reference_deg: float) -> np.ndarray:
@@ -129,6 +153,37 @@ def _best_second_scores(
     return best_score, float(np.nanmax(masked))
 
 
+def _top_finite_indices(heatmap: np.ndarray, count: int) -> list[tuple[int, int]]:
+    finite_flat = np.flatnonzero(np.isfinite(heatmap.ravel()))
+    if finite_flat.size == 0:
+        return []
+    scores = heatmap.ravel()[finite_flat]
+    keep = finite_flat[np.argsort(scores)[-max(1, count):]]
+    keep = keep[np.argsort(heatmap.ravel()[keep])[::-1]]
+    return [tuple(int(value) for value in np.unravel_index(index, heatmap.shape)) for index in keep]
+
+
+def _combine_profiles(*profiles: dict[str, float | int]) -> dict[str, float | int]:
+    combined: dict[str, float | int] = {
+        "azimuth_count": 0,
+        "shift_count": 0,
+        "sample_count": 0,
+        "hypotheses": 0,
+        "search_time_s": 0.0,
+        "dem_sample_time_s": 0.0,
+        "correlation_time_s": 0.0,
+    }
+    for profile in profiles:
+        for key, value in profile.items():
+            if key in {"azimuth_count", "shift_count", "sample_count"}:
+                combined[key] = max(int(combined.get(key, 0)), int(value))
+            elif key == "hypotheses":
+                combined[key] = int(combined.get(key, 0)) + int(value)
+            else:
+                combined[key] = float(combined.get(key, 0.0)) + float(value)
+    return combined
+
+
 def correlate_profile(
     dem: DEMGrid,
     observed_profile_m: np.ndarray,
@@ -139,7 +194,7 @@ def correlate_profile(
 ) -> CorrelationResult:
     """Search DEM profiles and return the best azimuth/shift match."""
 
-    cfg = config or CorrelationConfig()
+    cfg = correlation_config_for_quality(config or CorrelationConfig())
     cfg.validate()
     observed = np.asarray(observed_profile_m, dtype=float)
     distances = np.asarray(distances_m, dtype=float)
@@ -150,32 +205,64 @@ def correlate_profile(
         raise ValueError("At least five observed terrain samples are required.")
     if center_x_m is None or center_y_m is None:
         center_x_m, center_y_m = dem.center_m
+    shift_min_m = cfg.shift_min_m
+    shift_max_m = cfg.shift_max_m
+    if cfg.max_search_radius_m is not None:
+        radius = float(cfg.max_search_radius_m)
+        shift_min_m = max(shift_min_m, -radius)
+        shift_max_m = min(shift_max_m, radius)
 
+    coarse_profile: dict[str, float | int] = {}
     if cfg.coarse_to_fine:
         coarse_az = _azimuth_grid(cfg.coarse_azimuth_step_deg)
-        coarse_shifts = _make_grid(cfg.shift_min_m, cfg.shift_max_m, cfg.coarse_shift_step_m)
-        coarse_heatmap = _search_grid(dem, observed, distances, coarse_az, coarse_shifts, center_x_m, center_y_m)
-        coarse_best = np.unravel_index(np.nanargmax(coarse_heatmap), coarse_heatmap.shape)
-        coarse_best_az = coarse_az[coarse_best[0]]
-        coarse_best_shift = coarse_shifts[coarse_best[1]]
+        coarse_shifts = _make_grid(shift_min_m, shift_max_m, cfg.coarse_shift_step_m)
+        coarse_heatmap, coarse_profile = _search_grid(dem, observed, distances, coarse_az, coarse_shifts, center_x_m, center_y_m)
+        coarse_indexes = _top_finite_indices(coarse_heatmap, cfg.max_candidates)
+        if not coarse_indexes:
+            coarse_indexes = [(0, 0)]
+        azimuth_parts = []
+        shift_parts = []
+        for coarse_index in coarse_indexes:
+            coarse_best_az = coarse_az[coarse_index[0]]
+            coarse_best_shift = coarse_shifts[coarse_index[1]]
+            azimuth_parts.append(
+                np.mod(
+                    _make_grid(
+                        coarse_best_az - cfg.fine_azimuth_radius_deg,
+                        coarse_best_az + cfg.fine_azimuth_radius_deg,
+                        cfg.azimuth_step_deg,
+                    ),
+                    360.0,
+                )
+            )
+            shift_parts.append(
+                _make_grid(
+                    max(shift_min_m, coarse_best_shift - cfg.fine_shift_radius_m),
+                    min(shift_max_m, coarse_best_shift + cfg.fine_shift_radius_m),
+                    cfg.shift_step_m,
+                )
+            )
         azimuths = np.mod(
-            _make_grid(
-                coarse_best_az - cfg.fine_azimuth_radius_deg,
-                coarse_best_az + cfg.fine_azimuth_radius_deg,
-                cfg.azimuth_step_deg,
-            ),
+            np.unique(np.concatenate(azimuth_parts)) if azimuth_parts else _azimuth_grid(cfg.azimuth_step_deg),
             360.0,
         )
-        shifts = _make_grid(
-            max(cfg.shift_min_m, coarse_best_shift - cfg.fine_shift_radius_m),
-            min(cfg.shift_max_m, coarse_best_shift + cfg.fine_shift_radius_m),
-            cfg.shift_step_m,
-        )
+        shifts = np.unique(np.concatenate(shift_parts)) if shift_parts else _make_grid(shift_min_m, shift_max_m, cfg.shift_step_m)
     else:
         azimuths = _azimuth_grid(cfg.azimuth_step_deg)
-        shifts = _make_grid(cfg.shift_min_m, cfg.shift_max_m, cfg.shift_step_m)
+        shifts = _make_grid(shift_min_m, shift_max_m, cfg.shift_step_m)
 
-    heatmap = _search_grid(dem, observed, distances, azimuths, shifts, center_x_m, center_y_m)
+    heatmap, fine_profile = _search_grid(dem, observed, distances, azimuths, shifts, center_x_m, center_y_m)
+    profile = _combine_profiles(coarse_profile, fine_profile)
+    profile.update(
+        {
+            "mode": cfg.tercom_quality_mode,
+            "coarse_to_fine": bool(cfg.coarse_to_fine),
+            "coarse_hypotheses": int(coarse_profile.get("hypotheses", 0)),
+            "fine_hypotheses": int(fine_profile.get("hypotheses", 0)),
+            "shift_min_m": float(shift_min_m),
+            "shift_max_m": float(shift_max_m),
+        }
+    )
     roughness = terrain_roughness_score(observed)
     if np.all(~np.isfinite(heatmap)):
         # Degenerate case: either the search grid left the DEM bounds, or the
@@ -203,6 +290,7 @@ def correlate_profile(
             best_reference_profile_m=nan_profile,
             observed_profile_m=observed,
             distances_m=distances,
+            profile=profile,
         )
 
     best_index = np.unravel_index(np.nanargmax(heatmap), heatmap.shape)
@@ -242,4 +330,5 @@ def correlate_profile(
         best_reference_profile_m=np.asarray(reference, dtype=float),
         observed_profile_m=observed,
         distances_m=distances,
+        profile=profile,
     )
