@@ -28,7 +28,7 @@ from typing import Any
 
 import numpy as np
 
-from .dem import DEMData, dem_xy_to_geodetic
+from .dem import DEMData, dem_xy_to_geodetic, geodetic_to_dem_xy
 from .metrics import confidence_score as native_confidence_score
 from .metrics import terrain_informativeness as native_terrain_info
 
@@ -42,9 +42,16 @@ _TERCOM_SRC = _REPO / "tercom_uav" / "src"
 if str(_TERCOM_SRC) not in sys.path:
     sys.path.insert(0, str(_TERCOM_SRC))
 
-from tercom_uav.config import CorrelationConfig                 # noqa: E402
+from tercom_uav.config import CorrelationConfig, GPSFusionConfig, correlation_config_for_quality  # noqa: E402
 from tercom_uav.dem import DEMGrid                              # noqa: E402
 from tercom_uav.estimator import estimate_single_window        # noqa: E402
+from tercom_uav.gps import (                                    # noqa: E402
+    GPSFusionState,
+    first_usable_gps_anchor,
+    fuse_navigation_estimate,
+    gga_records_to_gps_fixes,
+    tercom_only_diagnostics,
+)
 from tercom_uav.nmea import NMEAError, parse_gpgga             # noqa: E402
 from tercom_uav.profiles import build_terrain_profile          # noqa: E402
 from tercom_uav.types import GGARecord                         # noqa: E402
@@ -89,6 +96,46 @@ def _records_from_nmea(nmea_text: str) -> list[GGARecord]:
     return records
 
 
+def _gps_fixes_for_dem(records: list[GGARecord], dem: DEMData):
+    converter = None
+    if dem.georef is not None:
+        converter = lambda lat, lon: geodetic_to_dem_xy(dem, lat, lon)
+    return gga_records_to_gps_fixes(records, local_converter=converter)
+
+
+def _gps_assisted_config(config: CorrelationConfig, gps_config: GPSFusionConfig) -> CorrelationConfig:
+    radius = float(gps_config.reacquire_window_radius_m)
+    return CorrelationConfig(
+        azimuth_step_deg=config.azimuth_step_deg,
+        shift_min_m=max(config.shift_min_m, -radius),
+        shift_max_m=min(config.shift_max_m, radius),
+        shift_step_m=config.shift_step_m,
+        sample_spacing_m=config.sample_spacing_m,
+        coarse_to_fine=config.coarse_to_fine,
+        coarse_azimuth_step_deg=config.coarse_azimuth_step_deg,
+        coarse_shift_step_m=config.coarse_shift_step_m,
+        fine_azimuth_radius_deg=config.fine_azimuth_radius_deg,
+        fine_shift_radius_m=min(config.fine_shift_radius_m, radius),
+        min_correlation=config.min_correlation,
+        min_score_gap=config.min_score_gap,
+        min_relative_gap=config.min_relative_gap,
+        min_observability=config.min_observability,
+        speed_search_enabled=config.speed_search_enabled,
+        speed_scale_min=config.speed_scale_min,
+        speed_scale_max=config.speed_scale_max,
+        speed_scale_step=config.speed_scale_step,
+        speed_search_azimuth_step_deg=config.speed_search_azimuth_step_deg,
+        speed_search_shift_step_m=config.speed_search_shift_step_m,
+        speed_search_use_coarse_azimuth=config.speed_search_use_coarse_azimuth,
+        tercom_quality_mode=config.tercom_quality_mode,
+        max_search_radius_m=min(
+            radius,
+            config.max_search_radius_m if config.max_search_radius_m is not None else radius,
+        ),
+        max_candidates=config.max_candidates,
+    )
+
+
 def solve_navigation_via_tercom(
     dem: DEMData,
     nmea_text: str,
@@ -97,36 +144,50 @@ def solve_navigation_via_tercom(
     speed_min_mps: float = 20.0,
     speed_max_mps: float = 80.0,
     shift_step_m: float = 30.0,
+    tercom_quality_mode: str = "balanced",
     **_ignored: Any,
 ) -> BridgeSolution:
     """Drop-in замена app.core.navigation.solve_navigation на ядре Теаркома."""
     grid = dem_data_to_grid(dem)
     records = _records_from_nmea(nmea_text)
     profile = build_terrain_profile(records, baro_alt_msl_m=barometric_altitude_msl)
+    gps_config = GPSFusionConfig(max_uav_speed_mps=max(120.0, float(speed_max_mps) * 1.5))
+    gps_fixes = _gps_fixes_for_dem(records, dem)
+    gps_anchor = first_usable_gps_anchor(gps_fixes, gps_config)
 
     hint = max(1.0, 0.5 * (float(speed_min_mps) + float(speed_max_mps)))
-    cfg = CorrelationConfig(
-        shift_step_m=float(shift_step_m),
-        sample_spacing_m=max(10.0, float(np.median(grid.resolution_m))),
-        coarse_to_fine=False,
-        speed_search_enabled=True,
-        speed_scale_min=max(0.05, float(speed_min_mps) / hint),
-        speed_scale_max=max(float(speed_min_mps) / hint + 0.1, float(speed_max_mps) / hint),
-        speed_scale_step=0.1,
+    cfg = correlation_config_for_quality(
+        CorrelationConfig(
+            shift_step_m=float(shift_step_m),
+            sample_spacing_m=max(10.0, float(np.median(grid.resolution_m))),
+            coarse_to_fine=False,
+            speed_search_enabled=True,
+            speed_scale_min=max(0.05, float(speed_min_mps) / hint),
+            speed_scale_max=max(float(speed_min_mps) / hint + 0.1, float(speed_max_mps) / hint),
+            speed_scale_step=0.1,
+            tercom_quality_mode=tercom_quality_mode,
+            max_search_radius_m=float(_ignored.get("search_radius_m", 900.0)) if _ignored.get("search_radius_m") else None,
+        ),
+        mode=tercom_quality_mode,
+    )
+    search_cfg = _gps_assisted_config(cfg, gps_config) if gps_anchor is not None else cfg
+    search_center_x = gps_anchor.x_m if gps_anchor is not None else None
+    search_center_y = gps_anchor.y_m if gps_anchor is not None else None
+
+    correlation, estimate = estimate_single_window(
+        grid,
+        profile,
+        hint,
+        search_cfg,
+        search_center_x_m=search_center_x,
+        search_center_y_m=search_center_y,
     )
 
-    correlation, estimate = estimate_single_window(grid, profile, hint, cfg)
-
     # --- геометрия найденного трека (полный профиль = постфактум-фикс) ---
-    cx, cy = grid.center_m
     az = float(correlation.best_azimuth_deg)
     az_rad = math.radians(az)
     dx, dy = math.sin(az_rad), math.cos(az_rad)
     end_dist = float(correlation.distances_m[-1])
-    start_x = cx + dx * correlation.best_shift_m
-    start_y = cy + dy * correlation.best_shift_m
-    end_x = cx + dx * (correlation.best_shift_m + end_dist)
-    end_y = cy + dy * (correlation.best_shift_m + end_dist)
     speed = float(estimate.speed_mps)
 
     rmse_m = math.sqrt(correlation.mse_m2) if math.isfinite(correlation.mse_m2) else float("inf")
@@ -138,6 +199,36 @@ def solve_navigation_via_tercom(
     terrain_info = float(native_terrain_info(observed))
     peak_gap = float(best_score - correlation.second_best_score) if math.isfinite(correlation.second_best_score) else float("inf")
     confidence = float(native_confidence_score(best_score, rmse_m, terrain_info, peak_gap))
+    estimate.confidence_score = confidence
+
+    position_fixes = [fix for fix in gps_fixes if fix.has_position]
+    navigation_diagnostics = tercom_only_diagnostics(
+        estimate,
+        search_window_m=gps_config.reacquire_window_radius_m if gps_anchor is not None else None,
+    )
+    if position_fixes:
+        gps_state = GPSFusionState()
+        for fix in position_fixes[:-1]:
+            gps_state.evaluate(fix, gps_config)
+        fusion = fuse_navigation_estimate(
+            estimate,
+            position_fixes[-1],
+            config=gps_config,
+            state=gps_state,
+            search_window_m=gps_config.reacquire_window_radius_m if gps_anchor is not None else None,
+        )
+        estimate = fusion.estimate
+        confidence = float(estimate.confidence_score)
+        navigation_diagnostics = fusion.diagnostics
+
+    az = float(estimate.azimuth_deg)
+    az_rad = math.radians(az)
+    dx, dy = math.sin(az_rad), math.cos(az_rad)
+    speed = float(estimate.speed_mps)
+    end_x = float(estimate.x_m)
+    end_y = float(estimate.y_m)
+    start_x = end_x - dx * end_dist
+    start_y = end_y - dy * end_dist
 
     estimated: dict[str, Any] = {
         "start_x_m": start_x, "start_y_m": start_y,
@@ -146,6 +237,9 @@ def solve_navigation_via_tercom(
         "correlation": best_score, "rmse_m": rmse_m, "mae_m": mae_m,
         "combined_score": best_score, "confidence": confidence,
         "baro_drift_offset_m": 0.0, "baro_drift_slope_m_per_sample": 0.0,
+        "navigation_mode": navigation_diagnostics["mode"],
+        "navigation_diagnostics": navigation_diagnostics,
+        "tercom_profile": correlation.profile,
     }
     start_geo = dem_xy_to_geodetic(dem, start_x, start_y)
     end_geo = dem_xy_to_geodetic(dem, end_x, end_y)
@@ -171,6 +265,9 @@ def solve_navigation_via_tercom(
         "correlation": best_score,
         "rmse_m": rmse_m,
         "warning": warning,
+        "navigation_mode": navigation_diagnostics["mode"],
+        "navigation_diagnostics": navigation_diagnostics,
+        "tercom_profile": correlation.profile,
     }
     trajectory = {
         "start": {"x_m": start_x, "y_m": start_y},
@@ -186,6 +283,8 @@ def solve_navigation_via_tercom(
         "corrected_measured_profile": observed,
         "sample_rate_hz": float(sample_rate_hz),
         "engine": "tercom_uav",
+        "navigation_diagnostics": navigation_diagnostics,
+        "tercom_profile": correlation.profile,
     }
     return BridgeSolution(
         estimated=estimated,
