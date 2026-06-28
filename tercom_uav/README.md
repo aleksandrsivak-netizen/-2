@@ -130,6 +130,48 @@ vy = cos(azimuth) * speed
 
 TERCOM-поиск сравнивает наблюдаемый профиль рельефа с эталонными профилями DEM для азимутов `0..359` и сдвигов вдоль луча. Основная метрика - Pearson correlation coefficient после центрирования и нормализации профилей. Дополнительно сохраняются NCC, MSE, MAD, discrimination ratio, roughness и observability.
 
+## Режимы GPS / TERCOM
+
+Ядро явно поддерживает три сценария:
+
+- `GPS_OFF_TERCOM_ONLY` - координаты GPS отсутствуют; старый TERCOM-only путь сохраняется без изменения.
+- `GPS_HEALTHY_ASSISTED` - GPS свежий и качественный; GPS задает внешнюю оценку, TERCOM строит независимую привязку, итоговая позиция считается через weighted fusion.
+- `GPS_DEGRADED`, `GPS_REJECTED_REACQUIRE`, `DATA_STALE`, `DATA_INVALID` - GPS неточный, старый, пришел не по порядку или противоречит TERCOM; подозрительные координаты не используются как основа, confidence снижается, включается reacquire/TERCOM-only.
+
+Пороги вынесены в `GPSFusionConfig`: `gps_max_age_ms`, `gps_max_hdop`, `gps_min_satellites`, `gps_max_position_jump_m`, `gps_tercom_max_disagreement_m`, `max_uav_speed_mps`, `stale_data_timeout_ms`, `reacquire_window_radius_m` и счетчики hysteresis `gps_good_required_count` / `gps_bad_required_count`.
+
+GGA-парсер теперь читает координаты, `fix_quality`, `satellites`, `hdop` и checksum. Для каждого GPS-измерения формируется диагностика: `source`, `timestamp`, `receive_time`, `age_ms`, `is_stale`, `is_out_of_order`, `quality`, `accepted`, `reason`.
+
+Пример результата fusion:
+
+```json
+{
+  "mode": "GPS_HEALTHY_ASSISTED",
+  "confidence": 0.87,
+  "gps": {
+    "enabled": true,
+    "healthy": true,
+    "accepted": true,
+    "reject_reason": null,
+    "age_ms": 120,
+    "hdop": 0.9,
+    "satellites": 9
+  },
+  "tercom": {
+    "confidence": 0.82,
+    "matched": true,
+    "search_window_m": 1500.0,
+    "reacquire": false
+  },
+  "fusion": {
+    "gps_weight": 0.55,
+    "tercom_weight": 0.45,
+    "disagreement_m": 18.4
+  },
+  "warnings": []
+}
+```
+
 ## Артефакты запуска
 
 В `outputs/<run>/` сохраняются:
