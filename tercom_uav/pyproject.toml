@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Production-style prototype of terrain-referenced navigation for UAV radio-altimeter streams."
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "Hackathon Prototype" }]
+authors = [{ name = "GeoShturman Team" }]
 dependencies = [
   "numpy>=1.24",
   "scipy>=1.10",
