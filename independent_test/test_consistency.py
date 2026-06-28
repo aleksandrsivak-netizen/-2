@@ -1,7 +1,7 @@
 """
-Тест интеграции «Теарком (алгоритм) <-> ГеоШтурман (визуализация)».
+Тест интеграции алгоритмического ядра и визуализации ГеоШтурман.
 
-Папки проектов раздельные, фронтенды не тронуты. Проверяем ГОРЛЫШКО
+Папки проектов раздельные. Проверяем единый вход
 app.core.navigation.solve_navigation, через которое визуализация получает
 данные. Один и тот же DEM и NMEA подаются:
   A) solve_navigation при NAV_ENGINE=native  -> родной грид-движок;
@@ -89,13 +89,13 @@ def main():
                       sol_a.estimated["end_y_m"] - sol_b.estimated["end_y_m"])
     print(f"  Δazimuth={daz:.1f}°   Δposition={dpos:.0f} м")
 
-    print("\nКОНТРАКТ ДЛЯ ФРОНТА (мост, без правок визуализации):")
+    print("\nКОНТРАКТ ДЛЯ ФРОНТА:")
     print(f"  heatmap shape          = {sol_b.heatmap.shape}")
     print(f"  quality keys           = {sorted(sol_b.quality.keys())}")
     print(f"  engine                 = {sol_b.metadata.get('engine')}")
 
     ok = (a[0] <= 3 and a[2] <= 250 and b[0] <= 3 and b[2] <= 250 and daz <= 3 and dpos <= 250)
-    print("\nИТОГ:", "OK — горлышко переключается, оба движка согласованы, фронт не тронут"
+    print("\nИТОГ:", "OK — единый вход переключается, оба движка согласованы"
           if ok else "ВНИМАНИЕ — см. отклонения")
     return 0 if ok else 1
 
