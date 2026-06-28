@@ -110,6 +110,21 @@ reckoning)** — как инерциалка: рельеф даёт точную
 «Подать как поток» (с выбранной частотой) или «Решить разом». Если бэкенд недоступен —
 дашборд переходит в автономный demo-поток, оставаясь живым.
 
+### Диагностика GPS
+
+Если входной `$GPGGA` содержит широту/долготу, fix quality, число спутников и
+HDOP, bridge передает их в ядро `tercom_uav` как GPS-источник. Дашборд получает
+`navigation_mode` и `navigation_diagnostics`:
+
+- `GPS_HEALTHY_ASSISTED` — GPS принят и объединен с TERCOM;
+- `GPS_DEGRADED` — GPS неточный, его вес снижен;
+- `GPS_REJECTED_REACQUIRE` — GPS отвергнут, TERCOM перезапускает захват;
+- `DATA_STALE` / `DATA_INVALID` — данные старые или пришли не по порядку;
+- `GPS_OFF_TERCOM_ONLY` — координат GPS нет, прежний TERCOM-only режим.
+
+В `/api/nmea/parse` для каждой строки дополнительно возвращаются `gps_enabled`,
+`gps_quality`, `age_ms`, `is_out_of_order`, `accepted` и `reject_reason`.
+
 ---
 
 ## Архитектура
