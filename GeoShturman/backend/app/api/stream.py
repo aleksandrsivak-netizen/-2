@@ -18,6 +18,7 @@ import logging
 import math
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
@@ -394,7 +395,8 @@ def _solve_window(window: list[dict[str, Any]], baro_msl: float,
                   sample_hz: float = 5.0,
                   speed_lo: float = 20.0, speed_hi: float = 80.0,
                   dem_params: dict[str, Any] | None = None,
-                  capture_center: tuple[float, float] | None = None) -> dict[str, Any] | None:
+                  capture_center: tuple[float, float] | None = None,
+                  tercom_quality_mode: str = "balanced") -> dict[str, Any] | None:
     """Синхронный пересчёт решения ядром по накопленному окну NMEA.
 
     Если задан center — режим трекинга: поиск локально вокруг предсказанной
@@ -422,18 +424,21 @@ def _solve_window(window: list[dict[str, Any]], baro_msl: float,
             tune = dict(search_center_x_m=float(center[0]), search_center_y_m=float(center[1]),
                         search_radius_m=500.0, coarse_step_m=150.0, fine_step_m=40.0,
                         azimuth_coarse_step_deg=8.0, azimuth_fine_step_deg=1.0,
-                        speed_coarse_step_mps=4.0, speed_fine_step_mps=1.0)
+                        speed_coarse_step_mps=4.0, speed_fine_step_mps=1.0,
+                        tercom_quality_mode=tercom_quality_mode)
         elif capture_center is not None:
             # захват, но вокруг известного старта (не центра карты!) — широкий
             # радиус, т.к. неопределённость на старте больше, чем при трекинге.
             tune = dict(search_center_x_m=float(capture_center[0]), search_center_y_m=float(capture_center[1]),
                         search_radius_m=900.0, coarse_step_m=250.0, fine_step_m=75.0,
                         azimuth_coarse_step_deg=10.0, azimuth_fine_step_deg=2.0,
-                        speed_coarse_step_mps=5.0, speed_fine_step_mps=2.0)
+                        speed_coarse_step_mps=5.0, speed_fine_step_mps=2.0,
+                        tercom_quality_mode=tercom_quality_mode)
         else:  # захват — быстрые грубые параметры по всей области
             tune = dict(search_radius_m=900.0, coarse_step_m=250.0, fine_step_m=75.0,
                         azimuth_coarse_step_deg=10.0, azimuth_fine_step_deg=2.0,
-                        speed_coarse_step_mps=5.0, speed_fine_step_mps=2.0)
+                        speed_coarse_step_mps=5.0, speed_fine_step_mps=2.0,
+                        tercom_quality_mode=tercom_quality_mode)
         solution = solve_navigation(
             dem=dem, nmea_text=nmea_text, barometric_altitude_msl=baro_msl,
             sample_rate_hz=float(sample_hz), speed_min_mps=float(speed_lo), speed_max_mps=float(speed_hi),
@@ -461,6 +466,9 @@ def _solve_window(window: list[dict[str, Any]], baro_msl: float,
             "dem_source": _dem_label(),
             "tracking": center is not None,
             "quality": solution.quality,
+            "navigation_mode": est.get("navigation_mode"),
+            "navigation_diagnostics": est.get("navigation_diagnostics"),
+            "tercom_profile": est.get("tercom_profile"),
         }
     except Exception:
         logger.exception("_solve_window failed; falling back to terrain heuristic")
@@ -564,31 +572,94 @@ async def stream_reset() -> dict[str, str]:
 
 
 @router.get("/api/dem/grid")
-async def dem_grid(width_m: float = 8000, height_m: float = 8000, resolution_m: float = 30,
-                   terrain_type: str = "mixed", side: int = 72) -> dict[str, Any]:
+async def dem_grid(
+    width_m: float = 8000,
+    height_m: float = 8000,
+    resolution_m: float = 30,
+    terrain_type: str = "mixed",
+    side: int = 72,
+    center_x_m: float | None = None,
+    center_y_m: float | None = None,
+    geotiff_path: str | None = None,
+) -> dict[str, Any]:
     """Прореженная сетка высот текущего DEM (реального Copernicus или синтетического)
     для отрисовки настоящего рельефа на 3D-карте."""
     import numpy as _np
 
     loop = asyncio.get_running_loop()
 
-    def _build() -> dict[str, Any]:
-        from app.core.real_dem import provide_dem
-        dem = provide_dem(width_m=width_m, height_m=height_m, resolution_m=resolution_m,
-                          terrain_type=terrain_type, lat=ORIGIN_LAT, lon=ORIGIN_LON)
-        elev = _np.asarray(dem.elevation, dtype=float)
-        R, C = elev.shape
-        ri = _np.linspace(0, R - 1, min(side, R)).astype(int)
-        ci = _np.linspace(0, C - 1, min(side, C)).astype(int)
-        small = elev[_np.ix_(ri, ci)]
-        mn, mx = float(small.min()), float(small.max())
-        norm = (small - mn) / (mx - mn) if mx > mn else _np.zeros_like(small)
-        return {
+    def _normalize_grid(elev: _np.ndarray, source: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        finite = _np.isfinite(elev)
+        if not _np.any(finite):
+            return {"z": [], "source": source, "error": "no_finite_dem_values"}
+        fill = float(_np.nanmean(elev[finite]))
+        safe = _np.where(finite, elev, fill)
+        mn, mx = float(_np.min(safe)), float(_np.max(safe))
+        norm = (safe - mn) / (mx - mn) if mx > mn else _np.zeros_like(safe)
+        payload = {
             "z": _np.round(norm, 4).tolist(),
             "min_m": round(mn, 1), "max_m": round(mx, 1), "span_m": round(mx - mn, 1),
-            "rows": int(small.shape[0]), "cols": int(small.shape[1]),
-            "source": _dem_label(),
+            "rows": int(safe.shape[0]), "cols": int(safe.shape[1]),
+            "source": source,
         }
+        if extra:
+            payload.update(extra)
+        return payload
+
+    def _build() -> dict[str, Any]:
+        center_x = float(center_x_m) if center_x_m is not None else width_m / 2.0
+        center_y = float(center_y_m) if center_y_m is not None else height_m / 2.0
+        grid_side = max(8, min(int(side), 160))
+
+        if geotiff_path and geotiff_path.strip():
+            import rasterio
+            from rasterio.enums import Resampling
+            from rasterio.windows import from_bounds
+
+            dem_path = Path(geotiff_path).expanduser().resolve()
+            if not dem_path.is_file():
+                return {"z": [], "source": "GeoTIFF", "error": f"geotiff_not_found: {dem_path}"}
+            with rasterio.open(dem_path) as ds:
+                left = center_x - width_m / 2.0
+                right = center_x + width_m / 2.0
+                bottom = center_y - height_m / 2.0
+                top = center_y + height_m / 2.0
+                win = from_bounds(left, bottom, right, top, ds.transform)
+                data = ds.read(
+                    1,
+                    window=win,
+                    out_shape=(grid_side, grid_side),
+                    resampling=Resampling.bilinear,
+                    boundless=True,
+                    fill_value=float("nan"),
+                )
+            return _normalize_grid(
+                _np.asarray(data, dtype=float),
+                source=f"GeoTIFF: {dem_path.name}",
+                extra={"center_x_m": center_x, "center_y_m": center_y, "geotiff_path": str(dem_path)},
+            )
+
+        lat, lon = _meters_to_latlon(center_x, center_y)
+        if os.environ.get("DEM_SOURCE", "synthetic").lower() == "real":
+            from app.core.real_dem import provide_dem
+            dem = provide_dem(width_m=width_m, height_m=height_m, resolution_m=resolution_m,
+                              terrain_type=terrain_type, lat=lat, lon=lon)
+        else:
+            from app.core.dem import create_synthetic_dem
+            seed = 42 + int(abs(center_x) // max(resolution_m, 1.0)) * 31 + int(abs(center_y) // max(resolution_m, 1.0)) * 17
+            dem = create_synthetic_dem(width_m=width_m, height_m=height_m, resolution_m=resolution_m,
+                                       seed=seed, terrain_type=terrain_type,
+                                       origin_lat_deg=lat, origin_lon_deg=lon)
+        elev = _np.asarray(dem.elevation, dtype=float)
+        R, C = elev.shape
+        ri = _np.linspace(0, R - 1, min(grid_side, R)).astype(int)
+        ci = _np.linspace(0, C - 1, min(grid_side, C)).astype(int)
+        small = elev[_np.ix_(ri, ci)]
+        return _normalize_grid(
+            small,
+            source=_dem_label(),
+            extra={"center_x_m": center_x, "center_y_m": center_y},
+        )
 
     try:
         return await loop.run_in_executor(None, _build)
