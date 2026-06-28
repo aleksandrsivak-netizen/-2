@@ -34,6 +34,17 @@ def test_artifact_can_be_downloaded() -> None:
     assert response.headers["content-type"].startswith("image/png")
 
 
+def test_artifact_view_opens_inline() -> None:
+    data = _run_demo()
+
+    response = client.get(f"/api/artifact-view/{data['run_id']}/result_json")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "content-disposition" not in response.headers
+    assert "run_id" in response.text
+
+
 def test_artifact_path_traversal_is_blocked() -> None:
     data = _run_demo()
     run_id = data["run_id"]
