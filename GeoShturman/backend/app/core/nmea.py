@@ -13,6 +13,11 @@ class ParsedNMEA:
     checksum_ok: bool
     parsed_ok: bool
     error: str | None = None
+    lat_deg: float | None = None
+    lon_deg: float | None = None
+    fix_quality: int | None = None
+    satellites: int | None = None
+    hdop: float | None = None
 
 
 def compute_nmea_checksum(sentence_without_dollar_and_checksum: str) -> str:
@@ -59,10 +64,27 @@ def parse_gpgga_sentence(sentence: str) -> ParsedNMEA:
         if len(fields) <= 9:
             return ParsedNMEA(None, None, raw, True, False, "missing altitude field")
         timestamp_s = _parse_nmea_time(fields[1]) if fields[1] else None
+        lat_deg = _parse_coordinate(fields[2], fields[3], 2) if len(fields) > 3 else None
+        lon_deg = _parse_coordinate(fields[4], fields[5], 3) if len(fields) > 5 else None
+        fix_quality = _parse_optional_int(fields[6]) if len(fields) > 6 else None
+        satellites = _parse_optional_int(fields[7]) if len(fields) > 7 else None
+        hdop = _parse_optional_float(fields[8]) if len(fields) > 8 else None
         if fields[9] == "":
             return ParsedNMEA(timestamp_s, None, raw, True, False, "empty altitude field")
         altitude_m = float(fields[9])
-        return ParsedNMEA(timestamp_s, altitude_m, raw, True, True, None)
+        return ParsedNMEA(
+            timestamp_s,
+            altitude_m,
+            raw,
+            True,
+            True,
+            None,
+            lat_deg,
+            lon_deg,
+            fix_quality,
+            satellites,
+            hdop,
+        )
     except Exception as exc:
         return ParsedNMEA(None, None, raw, True, False, str(exc))
 
@@ -90,3 +112,31 @@ def _parse_nmea_time(value: str) -> float:
     if hours > 23 or minutes > 59 or seconds >= 60.0:
         raise ValueError("timestamp out of range")
     return hours * 3600.0 + minutes * 60.0 + seconds
+
+
+def _parse_optional_float(value: str) -> float | None:
+    if value == "":
+        return None
+    return float(value)
+
+
+def _parse_optional_int(value: str) -> int | None:
+    if value == "":
+        return None
+    return int(value)
+
+
+def _parse_coordinate(value: str, hemisphere: str, degree_digits: int) -> float | None:
+    if value == "" and hemisphere == "":
+        return None
+    if value == "" or hemisphere == "":
+        raise ValueError("incomplete coordinate fields")
+    degrees = int(value[:degree_digits])
+    minutes = float(value[degree_digits:])
+    coordinate = degrees + minutes / 60.0
+    hemi = hemisphere.upper()
+    if hemi in {"S", "W"}:
+        coordinate = -coordinate
+    elif hemi not in {"N", "E"}:
+        raise ValueError("invalid coordinate hemisphere")
+    return float(coordinate)
