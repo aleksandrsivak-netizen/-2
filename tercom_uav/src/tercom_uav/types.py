@@ -24,6 +24,9 @@ class GGARecord:
     checksum_valid: bool
     quality: int | None = None
     satellites: int | None = None
+    lat_deg: float | None = None
+    lon_deg: float | None = None
+    hdop: float | None = None
 
 
 @dataclass(slots=True)
@@ -72,6 +75,7 @@ class CorrelationResult:
     best_reference_profile_m: np.ndarray
     observed_profile_m: np.ndarray
     distances_m: np.ndarray
+    profile: dict[str, Any] = field(default_factory=dict)
 
     def to_summary(self) -> dict[str, Any]:
         return {
@@ -87,6 +91,7 @@ class CorrelationResult:
             "mse_m2": self.mse_m2,
             "mad_m": self.mad_m,
             "ncc": self.ncc,
+            "profile": self.profile,
         }
 
 
@@ -150,4 +155,3 @@ class AccuracyMetrics:
             "observability_score": self.observability_score,
             **self.extra,
         }
-
