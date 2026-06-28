@@ -152,14 +152,15 @@
         pts.push(new THREE.Vector3(x, this._heightAt(x, z) + 1.4, z));
       }
       const curve = new THREE.CatmullRomCurve3(pts);
-      const tube = new THREE.TubeGeometry(curve, 120, 0.32, 8, false);
+      const tube = new THREE.TubeGeometry(curve, 120, 0.28, 8, false);
       const mat = new THREE.MeshBasicMaterial({ color: 0x46e88a });
       this.line = new THREE.Mesh(tube, mat);
       this.scene.add(this.line);
-      // свечение
-      const glow = new THREE.Mesh(new THREE.TubeGeometry(curve, 120, 0.9, 8, false),
-        new THREE.MeshBasicMaterial({ color: 0x34d399, transparent: true, opacity: 0.18 }));
-      this.scene.add(glow);
+      this.trajectoryGlow = new THREE.Mesh(
+        new THREE.TubeGeometry(curve, 120, 0.72, 8, false),
+        new THREE.MeshBasicMaterial({ color: 0x34d399, transparent: true, opacity: 0.14 })
+      );
+      this.scene.add(this.trajectoryGlow);
       this._curve = curve;
 
       // пульсирующие кольца цели
@@ -220,13 +221,12 @@
     setAzimuth(az) {
       if (typeof az !== "number" || isNaN(az)) return;
       this.azimuth = az;
-      if (this.line) { this.scene.remove(this.line); }
       // перестроить траекторию под новый азимут
       this._rebuildTrajectory();
     },
     _rebuildTrajectory() {
       // удалить старые объекты траектории
-      ["line", "rings"].forEach(k => { if (this[k]) { this.scene.remove(this[k]); this[k] = null; } });
+      ["line", "trajectoryGlow", "rings"].forEach(k => { if (this[k]) { this.scene.remove(this[k]); this[k] = null; } });
       this._buildTrajectory();
     },
 
