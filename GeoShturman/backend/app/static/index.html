@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark" />
   <title>ГЕОШТУРМАН · автономная навигация (real-time)</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%2334d399' d='M16 3 4 16l12 13 12-13z'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="/static/styles.css?v=3" />
+  <link rel="stylesheet" href="/static/styles.css?v=5" />
 </head>
 <body>
   <div class="app">
@@ -138,6 +138,8 @@
               <li><i class="sys__i sys__i--pf"></i><span>ПАРТИКЛ.</span><b class="ok" id="fPF">ОЖИДАНИЕ</b></li>
               <li><i class="sys__i sys__i--ins"></i><span>ИНС / DR</span><b class="ok">OK</b></li>
               <li><i class="sys__i sys__i--cpu"></i><span>ПОТОК</span><b class="green" id="sysStream">—</b></li>
+              <li><i class="sys__i sys__i--filter"></i><span>ГЕОШТУРМАН</span><b class="ok" id="sysTercomTime">—</b></li>
+              <li><i class="sys__i sys__i--dem"></i><span>ГИПОТЕЗЫ</span><b class="ok" id="sysTercomHyp">—</b></li>
               <li class="sys__gauge"><canvas id="loadGauge" width="40" height="40"></canvas><span><b id="loadPct">0%</b> ЦПУ ЯДРА</span></li>
             </ul>
           </section>
@@ -203,6 +205,7 @@
           <button type="button" class="tab is-active" data-tab="nmea">NMEA-поток</button>
           <button type="button" class="tab" data-tab="file">Файл</button>
           <button type="button" class="tab" data-tab="params">Параметры</button>
+          <button type="button" class="tab" data-tab="tercom">ГеоШтурман</button>
         </div>
 
         <label class="drawer__field">
@@ -264,6 +267,7 @@
             <label class="drawer__field"><span>Размер карты, м</span><input type="number" id="pSize" value="8000" min="1000" max="20000" step="500" /></label>
             <label class="drawer__field"><span>Радиус поиска, м</span><input type="number" id="pSearch" value="2000" min="500" max="5000" step="100" /></label>
             <label class="drawer__field"><span>Рельеф</span><select id="pTerrain"><option value="mixed" selected>Смешанный</option><option value="mountains">Горы</option><option value="hills">Холмы</option><option value="plains">Равнина</option></select></label>
+            <label class="drawer__field drawer__field--wide"><span>GeoTIFF DEM / карта</span><input type="text" id="pGeoTiff" placeholder="C:\Users\...\test_dem.tif" /></label>
           </div>
           <div class="drawer__actions">
             <button type="button" class="sbtn sbtn--go" id="pPlay">▶ Запустить поток</button>
@@ -271,16 +275,50 @@
           </div>
         </section>
 
+        <!-- ===== Вкладка: ГеоШтурман-проверка ===== -->
+        <section class="tabpane" data-pane="tercom">
+          <p class="drawer__hint">Загрузите проверочный набор: <b>heights.txt</b>, <b>GeoTIFF</b> и, если есть, эталонную траекторию. Шаг измерений считается как скорость / частота.</p>
+
+          <div class="drawer__grid">
+            <label class="drawer__field"><span>Старт X, м</span><input type="number" id="tStartX" value="500800" step="0.1" /></label>
+            <label class="drawer__field"><span>Старт Y, м</span><input type="number" id="tStartY" value="6098200" step="0.1" /></label>
+            <label class="drawer__field"><span>Курс от севера, °</span><input type="number" id="tHeading" value="57" min="0" max="359.999" step="0.1" /></label>
+            <label class="drawer__field"><span>Скорость, м/с</span><input type="number" id="tSpeed" value="100" min="0.1" step="0.1" /></label>
+            <label class="drawer__field"><span>Частота, Гц</span><input type="number" id="tHz" value="5" min="0.1" step="0.1" /></label>
+            <label class="drawer__field"><span>Радиус поиска, м</span><input type="number" id="tSearch" value="200" min="0" step="10" /></label>
+          </div>
+          <p class="drawer__status" id="tercomStepInfo">Шаг между измерениями: 20.0 м</p>
+
+          <label class="drawer__file drawer__file--compact" id="tercomHeightsDrop">
+            <input type="file" id="tercomHeightsFile" accept=".txt,.csv,text/plain" hidden />
+            <span class="drawer__file-ico">⬆</span>
+            <span class="drawer__file-txt" id="tercomHeightsName">Файл высот heights.txt</span>
+          </label>
+          <label class="drawer__file drawer__file--compact" id="tercomGeoDrop">
+            <input type="file" id="tercomGeoFile" accept=".tif,.tiff,image/tiff" hidden />
+            <span class="drawer__file-ico">⬆</span>
+            <span class="drawer__file-txt" id="tercomGeoName">GeoTIFF DEM / карта</span>
+          </label>
+          <label class="drawer__file drawer__file--compact" id="tercomRefDrop">
+            <input type="file" id="tercomRefFile" accept=".csv,.geojson,.json,text/csv,application/json" hidden />
+            <span class="drawer__file-ico">⬆</span>
+            <span class="drawer__file-txt" id="tercomRefName">Эталонная траектория, если есть</span>
+          </label>
+
+          <div class="drawer__actions">
+            <button type="button" class="sbtn sbtn--go" id="tercomRun">▶ Запустить проверку</button>
+          </div>
+          <div class="drawer__result" id="tercomResult" hidden></div>
+        </section>
+
         <p class="drawer__status" id="mStatus"></p>
-        <div class="drawer__divider"></div>
-        <p class="drawer__hint drawer__hint--dim">Источник кейсодателя может также слать поток напрямую на
-          <code>POST /api/stream/ingest</code> или WebSocket <code>/api/stream/ingest</code>.</p>
       </div>
     </aside>
+
   </div>
 
   <script src="/static/vendor/three.min.js"></script>
-  <script src="/static/three-scenes.js?v=3" defer></script>
-  <script src="/static/app.js?v=3" defer></script>
+  <script src="/static/three-scenes.js?v=5" defer></script>
+  <script src="/static/app.js?v=9" defer></script>
 </body>
 </html>
