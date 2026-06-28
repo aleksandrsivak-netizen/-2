@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from tercom_uav.config import CorrelationConfig, KalmanConfig
+from tercom_uav.config import CorrelationConfig, GPSFusionConfig, KalmanConfig
 from tercom_uav.correlation import correlate_profile
 from tercom_uav.dem import DEMGrid
+from tercom_uav.gps import (
+    GPSFix,
+    GPSFusionState,
+    first_usable_gps_anchor,
+    fuse_navigation_estimate,
+    tercom_only_diagnostics,
+)
 from tercom_uav.kalman import smooth_estimates
 from tercom_uav.profiles import resample_by_distance
 from tercom_uav.types import AccuracyMetrics, CorrelationResult, NavigationEstimate, TerrainProfile
@@ -23,6 +31,7 @@ class LocalizationResult:
     estimate: NavigationEstimate
     estimates: pd.DataFrame
     metrics: AccuracyMetrics
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 def angle_error_deg(estimated_deg: float, truth_deg: float) -> float:
@@ -93,6 +102,43 @@ def _dynamic_shift_config(dem: DEMGrid, config: CorrelationConfig) -> Correlatio
         speed_scale_step=config.speed_scale_step,
         speed_search_azimuth_step_deg=config.speed_search_azimuth_step_deg,
         speed_search_shift_step_m=config.speed_search_shift_step_m,
+        speed_search_use_coarse_azimuth=config.speed_search_use_coarse_azimuth,
+        tercom_quality_mode=config.tercom_quality_mode,
+        max_search_radius_m=config.max_search_radius_m,
+        max_candidates=config.max_candidates,
+    )
+
+
+def _gps_assisted_shift_config(config: CorrelationConfig, gps_config: GPSFusionConfig) -> CorrelationConfig:
+    radius = float(gps_config.reacquire_window_radius_m)
+    return CorrelationConfig(
+        azimuth_step_deg=config.azimuth_step_deg,
+        shift_min_m=max(config.shift_min_m, -radius),
+        shift_max_m=min(config.shift_max_m, radius),
+        shift_step_m=config.shift_step_m,
+        sample_spacing_m=config.sample_spacing_m,
+        coarse_to_fine=config.coarse_to_fine,
+        coarse_azimuth_step_deg=config.coarse_azimuth_step_deg,
+        coarse_shift_step_m=config.coarse_shift_step_m,
+        fine_azimuth_radius_deg=config.fine_azimuth_radius_deg,
+        fine_shift_radius_m=min(config.fine_shift_radius_m, radius),
+        min_correlation=config.min_correlation,
+        min_score_gap=config.min_score_gap,
+        min_relative_gap=config.min_relative_gap,
+        min_observability=config.min_observability,
+        speed_search_enabled=config.speed_search_enabled,
+        speed_scale_min=config.speed_scale_min,
+        speed_scale_max=config.speed_scale_max,
+        speed_scale_step=config.speed_scale_step,
+        speed_search_azimuth_step_deg=config.speed_search_azimuth_step_deg,
+        speed_search_shift_step_m=config.speed_search_shift_step_m,
+        speed_search_use_coarse_azimuth=config.speed_search_use_coarse_azimuth,
+        tercom_quality_mode=config.tercom_quality_mode,
+        max_search_radius_m=min(
+            radius,
+            config.max_search_radius_m if config.max_search_radius_m is not None else radius,
+        ),
+        max_candidates=config.max_candidates,
     )
 
 
@@ -117,7 +163,7 @@ def _cheap_screening_config(cfg: CorrelationConfig) -> CorrelationConfig:
     selected, using the caller's exact `cfg`)."""
 
     return CorrelationConfig(
-        azimuth_step_deg=cfg.azimuth_step_deg,
+        azimuth_step_deg=cfg.speed_search_azimuth_step_deg if cfg.speed_search_use_coarse_azimuth else cfg.azimuth_step_deg,
         shift_min_m=cfg.shift_min_m,
         shift_max_m=cfg.shift_max_m,
         shift_step_m=cfg.speed_search_shift_step_m,
@@ -128,6 +174,9 @@ def _cheap_screening_config(cfg: CorrelationConfig) -> CorrelationConfig:
         min_relative_gap=cfg.min_relative_gap,
         min_observability=cfg.min_observability,
         speed_search_enabled=False,
+        tercom_quality_mode="accurate",
+        max_search_radius_m=cfg.max_search_radius_m,
+        max_candidates=cfg.max_candidates,
     )
 
 
@@ -188,12 +237,28 @@ def estimate_single_window(
     profile: TerrainProfile,
     speed_hint_mps: float,
     correlation_config: CorrelationConfig | None = None,
+    search_center_x_m: float | None = None,
+    search_center_y_m: float | None = None,
 ) -> tuple[CorrelationResult, NavigationEstimate]:
     """Run TERCOM over the full profile and return the final state estimate."""
 
     cfg = _dynamic_shift_config(dem, correlation_config or CorrelationConfig())
-    estimated_speed, correlation = correlate_with_speed_search(dem, profile, speed_hint_mps, cfg)
-    estimate = _estimate_from_correlation(dem, correlation, estimated_speed, float(profile.times_s[-1]))
+    estimated_speed, correlation = correlate_with_speed_search(
+        dem,
+        profile,
+        speed_hint_mps,
+        cfg,
+        center_x_m=search_center_x_m,
+        center_y_m=search_center_y_m,
+    )
+    estimate = _estimate_from_correlation(
+        dem,
+        correlation,
+        estimated_speed,
+        float(profile.times_s[-1]),
+        center_x_m=search_center_x_m,
+        center_y_m=search_center_y_m,
+    )
     return correlation, estimate
 
 
@@ -362,29 +427,74 @@ def localize_profile(
     window_duration_s: float = 45.0,
     step_s: float = 15.0,
     max_speed_mps: float = 120.0,
+    gps_fixes: list[GPSFix] | None = None,
+    gps_config: GPSFusionConfig | None = None,
+    gps_state: GPSFusionState | None = None,
 ) -> LocalizationResult:
     """Run full localization and optional smoothing for a terrain profile."""
 
     cfg = correlation_config or CorrelationConfig()
-    correlation, estimate = estimate_single_window(dem, profile, speed_hint_mps, cfg)
-    estimates = estimate_window_series(
-        dem, profile, speed_hint_mps, cfg, window_duration_s, step_s, max_speed_mps
+    gps_cfg = gps_config or GPSFusionConfig(max_uav_speed_mps=max_speed_mps)
+    fixes = list(gps_fixes or [])
+    gps_available = any(fix.has_position for fix in fixes)
+    anchor = first_usable_gps_anchor(fixes, gps_cfg) if gps_available else None
+    search_center_x_m = anchor.x_m if anchor is not None else None
+    search_center_y_m = anchor.y_m if anchor is not None else None
+    single_cfg = _gps_assisted_shift_config(cfg, gps_cfg) if anchor is not None else cfg
+    correlation, estimate = estimate_single_window(
+        dem,
+        profile,
+        speed_hint_mps,
+        single_cfg,
+        search_center_x_m=search_center_x_m,
+        search_center_y_m=search_center_y_m,
     )
-    if kalman_config and kalman_config.enabled:
-        estimates = smooth_estimates(estimates, kalman_config)
-    if not estimates.empty:
-        last = estimates.iloc[-1]
-        estimate = NavigationEstimate(
-            time_s=float(last["time_s"]),
-            x_m=float(last["x_m"]),
-            y_m=float(last["y_m"]),
-            azimuth_deg=float(last["azimuth_deg"]),
-            speed_mps=float(last["speed_mps"]),
-            vx_mps=float(last["vx_mps"]),
-            vy_mps=float(last["vy_mps"]),
-            traveled_distance_m=float(last["traveled_distance_m"]),
-            confidence_score=float(last["confidence_score"]),
-            ambiguous_match=bool(last["ambiguous_match"]),
+
+    if gps_available:
+        state = gps_state or GPSFusionState()
+        diagnostics = tercom_only_diagnostics(estimate, search_window_m=gps_cfg.reacquire_window_radius_m)
+        position_fixes = [fix for fix in fixes if fix.has_position]
+        for fix in position_fixes[:-1]:
+            state.evaluate(fix, gps_cfg)
+        fusion = fuse_navigation_estimate(
+            estimate,
+            position_fixes[-1],
+            config=gps_cfg,
+            state=state,
+            search_window_m=gps_cfg.reacquire_window_radius_m if anchor is not None else None,
         )
+        estimate = fusion.estimate
+        diagnostics = fusion.diagnostics
+        estimates = pd.DataFrame([estimate.to_dict()])
+        estimates["navigation_mode"] = diagnostics["mode"]
+    else:
+        estimates = estimate_window_series(
+            dem, profile, speed_hint_mps, cfg, window_duration_s, step_s, max_speed_mps
+        )
+        if kalman_config and kalman_config.enabled:
+            estimates = smooth_estimates(estimates, kalman_config)
+        if not estimates.empty:
+            last = estimates.iloc[-1]
+            estimate = NavigationEstimate(
+                time_s=float(last["time_s"]),
+                x_m=float(last["x_m"]),
+                y_m=float(last["y_m"]),
+                azimuth_deg=float(last["azimuth_deg"]),
+                speed_mps=float(last["speed_mps"]),
+                vx_mps=float(last["vx_mps"]),
+                vy_mps=float(last["vy_mps"]),
+                traveled_distance_m=float(last["traveled_distance_m"]),
+                confidence_score=float(last["confidence_score"]),
+                ambiguous_match=bool(last["ambiguous_match"]),
+            )
+        diagnostics = tercom_only_diagnostics(estimate)
     metrics = compute_accuracy_metrics(estimates, truth, correlation)
-    return LocalizationResult(correlation=correlation, estimate=estimate, estimates=estimates, metrics=metrics)
+    metrics.confidence_score = estimate.confidence_score
+    metrics.extra["navigation_diagnostics"] = diagnostics
+    return LocalizationResult(
+        correlation=correlation,
+        estimate=estimate,
+        estimates=estimates,
+        metrics=metrics,
+        diagnostics=diagnostics,
+    )
