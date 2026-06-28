@@ -607,8 +607,31 @@
   function tercomLink(label, href) {
     const a = document.createElement("a");
     a.href = tercomArtifactViewHref(href);
+    const downloadName = tercomDownloadName(href, label);
+    if (downloadName.endsWith(".png")) {
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+    } else {
+      a.download = downloadName;
+    }
     a.textContent = label;
     return a;
+  }
+  function tercomDownloadName(href, label) {
+    const url = new URL(href, location.origin);
+    const filename = decodeURIComponent(url.pathname.split("/").pop() || "");
+    const namesByArtifactKey = {
+      trajectory_local_csv: "trajectory_local.csv",
+      trajectory_global_csv: "trajectory_global.csv",
+      trajectory_geojson: "trajectory.geojson",
+      trajectory_plot_png: "trajectory_plot.png",
+      result_json: "result.json",
+      heights: "heights.txt",
+      geotiff: "map.tif",
+    };
+    if (namesByArtifactKey[filename]) return namesByArtifactKey[filename];
+    if (filename.includes(".")) return filename;
+    return `${label.toLowerCase().replace(/\s+/g, "_")}.txt`;
   }
   function tercomArtifactViewHref(href) {
     const url = new URL(href, location.origin);
