@@ -285,6 +285,7 @@ def run_demo_pipeline(request: DemoRunRequest) -> DemoRunResponse:
         enable_kalman=request.enable_kalman,
         parallel_jobs=0,
         compensate_baro_drift=True,
+        tercom_quality_mode=request.tercom_quality_mode,
         **search,
     )
 
@@ -352,6 +353,8 @@ def run_demo_pipeline(request: DemoRunRequest) -> DemoRunResponse:
                 "core_mode": "core",
                 "requested_speed_mps": request.speed_mps,
                 "azimuth_error_deg": round(_angle_error_deg(estimated.azimuth_deg, request.azimuth_deg), 3),
+                "navigation": solution.metadata.get("navigation_diagnostics"),
+                "tercom_profile": solution.metadata.get("tercom_profile"),
             },
         }
     )
@@ -572,6 +575,59 @@ def _parse_nmea_time(value: str | None) -> float | None:
     return hours * 3600.0 + minutes * 60.0 + seconds
 
 
+def _parse_optional_int(value: str | None) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _parse_optional_float(value: str | None) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _parse_coordinate(value: str | None, hemisphere: str | None, degree_digits: int) -> tuple[float | None, str | None]:
+    if value in (None, "") and hemisphere in (None, ""):
+        return None, None
+    if value in (None, "") or hemisphere in (None, ""):
+        return None, "incomplete coordinate fields"
+    try:
+        degrees = int(value[:degree_digits])
+        minutes = float(value[degree_digits:])
+    except (ValueError, IndexError):
+        return None, "invalid coordinate field"
+    coordinate = degrees + minutes / 60.0
+    hemi = str(hemisphere).upper()
+    if hemi in {"S", "W"}:
+        coordinate = -coordinate
+    elif hemi not in {"N", "E"}:
+        return None, "invalid coordinate hemisphere"
+    return float(coordinate), None
+
+
+def _gps_quality_from_fields(item: dict[str, Any]) -> float | None:
+    if not item.get("gps_enabled"):
+        return None
+    score = 1.0
+    fix_quality = item.get("fix_quality")
+    satellites = item.get("satellites")
+    hdop = item.get("hdop")
+    if fix_quality is not None and int(fix_quality) <= 0:
+        return 0.0
+    if satellites is not None:
+        score *= _clip(float(satellites) / 8.0, 0.2, 1.0)
+    if hdop is not None:
+        score *= _clip(2.5 / max(float(hdop), 1e-9), 0.15, 1.0)
+    return round(float(score), 4)
+
+
 def _parse_nmea_line(line: str, line_number: int) -> dict[str, Any]:
     raw_line = line.strip()
     if not raw_line:
@@ -598,12 +654,22 @@ def _parse_nmea_line(line: str, line_number: int) -> dict[str, Any]:
     if len(fields) < 10 or not fields[0].endswith("GGA"):
         return {"line_number": line_number, "raw": raw_line, "valid": False, "error": "unsupported NMEA sentence"}
 
+    lat_deg, lat_error = _parse_coordinate(fields[2] if len(fields) > 2 else None, fields[3] if len(fields) > 3 else None, 2)
+    lon_deg, lon_error = _parse_coordinate(fields[4] if len(fields) > 4 else None, fields[5] if len(fields) > 5 else None, 3)
+    fix_quality = _parse_optional_int(fields[6] if len(fields) > 6 else None)
+    satellites = _parse_optional_int(fields[7] if len(fields) > 7 else None)
+    hdop = _parse_optional_float(fields[8] if len(fields) > 8 else None)
+
     try:
         altitude_m = float(fields[9])
     except ValueError:
         return {"line_number": line_number, "raw": raw_line, "valid": False, "error": "missing altitude field"}
 
-    return {
+    gps_warning = lat_error or lon_error
+    warning = "; ".join(item for item in (checksum_warning, gps_warning) if item)
+    gps_enabled = lat_deg is not None and lon_deg is not None
+
+    item = {
         "line_number": line_number,
         "raw": raw_line,
         "valid": True,
@@ -613,16 +679,76 @@ def _parse_nmea_line(line: str, line_number: int) -> dict[str, Any]:
         "time_utc": fields[1] or None,
         "radio_altitude_agl_m": altitude_m,
         "checksum_valid": checksum_valid,
-        "warning": checksum_warning,
+        "warning": warning or None,
+        "source": "gps" if gps_enabled else "altimeter",
+        "gps_enabled": gps_enabled,
+        "lat_deg": lat_deg,
+        "lon_deg": lon_deg,
+        "fix_quality": fix_quality,
+        "satellites": satellites,
+        "hdop": hdop,
     }
+    item["gps_quality"] = _gps_quality_from_fields(item)
+    return item
 
 
 def parse_nmea_text(nmea_text: str) -> list[dict[str, Any]]:
-    return [
+    measurements = [
         _parse_nmea_line(line, line_number)
         for line_number, line in enumerate(nmea_text.splitlines(), start=1)
         if line.strip()
     ]
+    previous_timestamp: float | None = None
+    for index, item in enumerate(measurements):
+        if not item.get("valid"):
+            item["input_diagnostic"] = {
+                "source": "unknown",
+                "timestamp": None,
+                "receive_time": None,
+                "age_ms": None,
+                "is_stale": False,
+                "is_out_of_order": False,
+                "quality": None,
+                "accepted": False,
+                "reason": item.get("error"),
+            }
+            continue
+        timestamp = item.get("timestamp_s")
+        receive_time = timestamp if timestamp is not None else float(index)
+        out_of_order = (
+            timestamp is not None
+            and previous_timestamp is not None
+            and float(timestamp) < float(previous_timestamp)
+        )
+        if timestamp is not None:
+            previous_timestamp = float(timestamp)
+        reason = "gps_data_out_of_order" if out_of_order else None
+        age_ms = 0.0 if timestamp is not None else None
+        quality = item.get("gps_quality")
+        accepted = not out_of_order
+        item.update(
+            {
+                "receive_time_s": receive_time,
+                "age_ms": age_ms,
+                "is_stale": False,
+                "is_out_of_order": out_of_order,
+                "quality": quality,
+                "accepted": accepted,
+                "reject_reason": reason,
+            }
+        )
+        item["input_diagnostic"] = {
+            "source": item.get("source", "altimeter"),
+            "timestamp": timestamp,
+            "receive_time": receive_time,
+            "age_ms": age_ms,
+            "is_stale": False,
+            "is_out_of_order": out_of_order,
+            "quality": quality,
+            "accepted": accepted,
+            "reason": reason,
+        }
+    return measurements
 
 
 def _terrain_summary(valid_measurements: list[dict[str, Any]], barometric_altitude_msl: float) -> dict[str, float]:
@@ -699,9 +825,11 @@ def solve_navigation_from_nmea(request: NavigationSolveRequest) -> dict[str, Any
             enable_kalman=request.enable_kalman,
             parallel_jobs=request.parallel_jobs,
             compensate_baro_drift=True,
+            tercom_quality_mode=request.tercom_quality_mode,
         )
         result["estimated"] = solution.estimated
         result["quality"] = solution.quality
+        result["tercom_profile"] = solution.metadata.get("tercom_profile")
         # географическая привязка найденной точки (для карты на дашборде)
         import math as _math
         _est = solution.estimated
