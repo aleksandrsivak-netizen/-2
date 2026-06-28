@@ -1,9 +1,10 @@
-"""Command line interface for the TERCOM UAV prototype."""
+﻿"""Command line interface for the TERCOM UAV prototype."""
 
 from __future__ import annotations
 
 import json
 import logging
+import sys
 from html import escape
 from datetime import datetime
 from pathlib import Path
@@ -13,10 +14,17 @@ import numpy as np
 import pandas as pd
 import typer
 
-from tercom_uav.config import CorrelationConfig, KalmanConfig, SimulationConfig, ensure_output_dir
+from tercom_uav.config import (
+    CorrelationConfig,
+    KalmanConfig,
+    SimulationConfig,
+    correlation_config_for_quality,
+    ensure_output_dir,
+)
+from tercom_uav.dorabotka import DorabotkaError, DorabotkaSearchConfig, run_dorabotka
 from tercom_uav.dem import DEMGrid
 from tercom_uav.estimator import localize_profile
-from tercom_uav.nmea import read_gpgga_file
+from tercom_uav.nmea import read_gpgga_file, read_gpgga_text
 from tercom_uav.profiles import build_terrain_profile, save_profile_csv
 from tercom_uav.simulator import simulate_flight
 from tercom_uav.visualization import save_visual_artifacts
@@ -136,14 +144,34 @@ def _load_dem(dem_path: Optional[Path], synthetic_flat: bool = False) -> DEMGrid
     return DEMGrid.from_geotiff(dem_path)
 
 
-def _correlation_config(dem: DEMGrid, shift_step_m: float, coarse_to_fine: bool) -> CorrelationConfig:
+def _correlation_config(
+    dem: DEMGrid,
+    shift_step_m: float,
+    coarse_to_fine: bool,
+    quality: str,
+) -> CorrelationConfig:
     resolution_x, resolution_y = dem.resolution_m
     sample_spacing = max(10.0, float(np.median([resolution_x, resolution_y])))
-    return CorrelationConfig(
-        shift_step_m=shift_step_m,
-        sample_spacing_m=sample_spacing,
-        coarse_to_fine=coarse_to_fine,
+    return correlation_config_for_quality(
+        CorrelationConfig(
+            shift_step_m=shift_step_m,
+            sample_spacing_m=sample_spacing,
+            coarse_to_fine=coarse_to_fine,
+            tercom_quality_mode=quality,
+        ),
+        mode=quality,
     )
+
+
+def _read_nmea_records(nmea: Optional[Path], nmea_text: Optional[str], stdin: bool):
+    sources = sum(1 for enabled in (nmea is not None, bool(nmea_text), stdin) if enabled)
+    if sources != 1:
+        raise typer.BadParameter("Provide exactly one input source: --nmea, --nmea-text or --stdin.")
+    if nmea is not None:
+        return read_gpgga_file(nmea), {"kind": "file", "value": str(nmea)}
+    if nmea_text:
+        return read_gpgga_text(nmea_text, source="--nmea-text", require_checksum=False), {"kind": "text", "value": "--nmea-text"}
+    return read_gpgga_text(sys.stdin.read(), source="stdin", require_checksum=False), {"kind": "stdin", "value": "stdin"}
 
 
 def _save_run_artifacts(
@@ -203,6 +231,7 @@ def demo(
     out: Optional[Path] = typer.Option(None, "--out", help="Output run directory."),
     use_kalman: bool = typer.Option(False, "--use-kalman", help="Enable alpha-beta smoothing."),
     coarse_to_fine: bool = typer.Option(False, "--coarse-to-fine/--full-grid", help="Use full grid (slow, default, reliable) or coarse-to-fine search (~45x faster but can lock onto the wrong azimuth on smooth terrain - validate before using on real flights)."),
+    quality: str = typer.Option("accurate", "--quality", help="TERCOM quality mode: fast, balanced or accurate."),
     shift_step: float = typer.Option(30.0, "--shift-step", help="Along-track shift step, m."),
     max_speed: float = typer.Option(120.0, "--max-speed", help="Reject window-to-window fixes implying speed above this, m/s; fall back to dead reckoning."),
     verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
@@ -221,7 +250,7 @@ def demo(
         hz=hz,
         noise_std_m=noise_std,
     )
-    correlation_config = _correlation_config(dem_grid, shift_step, coarse_to_fine)
+    correlation_config = _correlation_config(dem_grid, shift_step, coarse_to_fine, quality)
     kalman_config = KalmanConfig(enabled=use_kalman)
 
     logger.info("Simulating flight.")
@@ -305,7 +334,9 @@ def simulate(
 
 @app.command()
 def localize(
-    nmea: Path = typer.Option(..., "--nmea", help="Input NMEA file with GPGGA radio-altimeter records."),
+    nmea: Optional[Path] = typer.Option(None, "--nmea", help="Input NMEA file with GPGGA radio-altimeter records."),
+    nmea_text: Optional[str] = typer.Option(None, "--nmea-text", help="Inline NMEA text. Checksums are optional in this mode."),
+    stdin: bool = typer.Option(False, "--stdin", help="Read NMEA text from standard input. Checksums are optional in this mode."),
     dem: Optional[Path] = typer.Option(None, "--dem", help="Path to GeoTIFF DEM. Synthetic DEM is used when omitted."),
     baro_alt: float = typer.Option(1500.0, "--baro-alt", help="Barometric altitude AMSL, m."),
     out: Optional[Path] = typer.Option(None, "--out", help="Output run directory."),
@@ -313,6 +344,7 @@ def localize(
     truth: Optional[Path] = typer.Option(None, "--truth", help="Optional simulator truth CSV for metrics."),
     use_kalman: bool = typer.Option(False, "--use-kalman", help="Enable alpha-beta smoothing."),
     coarse_to_fine: bool = typer.Option(False, "--coarse-to-fine/--full-grid", help="Use full grid (slow, default, reliable) or coarse-to-fine search (~45x faster but can lock onto the wrong azimuth on smooth terrain - validate before using on real flights)."),
+    quality: str = typer.Option("accurate", "--quality", help="TERCOM quality mode: fast, balanced or accurate."),
     shift_step: float = typer.Option(30.0, "--shift-step", help="Along-track shift step, m."),
     max_speed: float = typer.Option(120.0, "--max-speed", help="Reject window-to-window fixes implying speed above this, m/s; fall back to dead reckoning."),
     verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
@@ -322,10 +354,10 @@ def localize(
     _setup_logging(verbose)
     out_dir = _timestamped_output(out, "localize")
     dem_grid = _load_dem(dem)
-    records = read_gpgga_file(nmea)
+    records, input_payload = _read_nmea_records(nmea, nmea_text, stdin)
     profile = build_terrain_profile(records, baro_alt_msl_m=baro_alt)
     truth_frame = pd.read_csv(truth) if truth else None
-    correlation_config = _correlation_config(dem_grid, shift_step, coarse_to_fine)
+    correlation_config = _correlation_config(dem_grid, shift_step, coarse_to_fine, quality)
     kalman_config = KalmanConfig(enabled=use_kalman)
     localization = localize_profile(
         dem=dem_grid,
@@ -337,7 +369,7 @@ def localize(
         max_speed_mps=max_speed,
     )
     config_payload = {
-        "input": {"nmea": str(nmea), "dem": str(dem) if dem else None, "truth": str(truth) if truth else None},
+        "input": {"nmea": input_payload, "dem": str(dem) if dem else None, "truth": str(truth) if truth else None},
         "baro_alt_msl": baro_alt,
         "speed_hint_mps": speed_hint,
         "correlation": correlation_config.to_dict(),
@@ -347,6 +379,66 @@ def localize(
     _save_run_artifacts(out_dir, dem_grid, profile, localization, truth_frame, config_payload)
     typer.echo(f"Localization run saved to {out_dir}")
     typer.echo(json.dumps(localization.estimate.to_dict(), indent=2, ensure_ascii=False, default=_json_default))
+
+
+@app.command("dorabotka")
+def dorabotka(
+    heights: Path = typer.Option(..., "--heights", help="Input heights.txt: one terrain height in meters per line."),
+    geotiff: Path = typer.Option(..., "--geotiff", help="Input GeoTIFF DEM/map."),
+    start_x: float = typer.Option(..., "--start-x", help="Start x coordinate, map or pixel depending on --start-coord-type."),
+    start_y: float = typer.Option(..., "--start-y", help="Start y coordinate, map or pixel depending on --start-coord-type."),
+    heading_deg: float = typer.Option(..., "--heading-deg", help="Heading clockwise from north: 0=N, 90=E."),
+    start_coord_type: str = typer.Option("auto", "--start-coord-type", help="Start coordinate type: auto, map or pixel."),
+    sample_step_m: float = typer.Option(1.0, "--sample-step-m", help="Meters between neighboring heights.txt samples."),
+    search_radius_m: float = typer.Option(200.0, "--search-radius-m", help="Local offset search radius, m."),
+    search_step_m: float = typer.Option(5.0, "--search-step-m", help="Fine local offset search step, m."),
+    heading_search_deg: float = typer.Option(5.0, "--heading-search-deg", help="Heading correction half-window, deg."),
+    heading_step_deg: float = typer.Option(1.0, "--heading-step-deg", help="Heading correction step, deg."),
+    normalize_profile: bool = typer.Option(True, "--normalize-profile/--absolute-profile", help="Compare terrain shape after demeaning/normalizing."),
+    coarse_to_fine: bool = typer.Option(True, "--coarse-to-fine/--full-grid", help="Use coarse-to-fine local search."),
+    max_candidates: int = typer.Option(8, "--max-candidates", help="Top coarse candidates refined in coarse-to-fine mode."),
+    max_hypotheses: int = typer.Option(250_000, "--max-hypotheses", help="Maximum refined hypotheses before limiting candidate set."),
+    reference_trajectory: Optional[Path] = typer.Option(None, "--reference-trajectory", help="Optional CSV or GeoJSON reference trajectory."),
+    output_dir: Optional[Path] = typer.Option(None, "--output-dir", help="Directory for result.json, CSV, GeoJSON and PNG artifacts."),
+) -> None:
+    """Run Dorabotka: heights.txt + GeoTIFF + start/heading -> trajectory."""
+
+    out_dir = ensure_output_dir(output_dir or _timestamped_output(None, "dorabotka"))
+    config = DorabotkaSearchConfig(
+        sample_step_m=sample_step_m,
+        search_radius_m=search_radius_m,
+        search_step_m=search_step_m,
+        heading_search_deg=heading_search_deg,
+        heading_step_deg=heading_step_deg,
+        start_coord_type=start_coord_type,
+        normalize_profile=normalize_profile,
+        coarse_to_fine=coarse_to_fine,
+        max_candidates=max_candidates,
+        max_hypotheses=max_hypotheses,
+    )
+    try:
+        result = run_dorabotka(
+            heights_path=heights,
+            geotiff_path=geotiff,
+            start_x=start_x,
+            start_y=start_y,
+            heading_deg=heading_deg,
+            output_dir=out_dir,
+            config=config,
+            reference_trajectory=reference_trajectory,
+        )
+    except DorabotkaError as exc:
+        typer.echo(json.dumps(exc.to_dict(), ensure_ascii=False, indent=2), err=True)
+        raise typer.Exit(code=2) from exc
+
+    typer.echo(f"Dorabotka run saved to {out_dir}")
+    typer.echo(json.dumps({
+        "mode": result["mode"],
+        "result": result["result"],
+        "diagnostics": result["diagnostics"],
+        "warnings": result["warnings"],
+        "artifacts": result.get("artifacts", {}),
+    }, ensure_ascii=False, indent=2, default=_json_default))
 
 
 @app.command()
