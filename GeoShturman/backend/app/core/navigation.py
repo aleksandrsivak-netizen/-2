@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -107,6 +108,7 @@ def _solve_navigation_native(
     enable_kalman: bool = True,
     parallel_jobs: int | None = 1,
     compensate_baro_drift: bool = True,
+    **_ignored: Any,
 ) -> NavigationSolution:
     """Родной грид-корреляционный решатель (оставлен как fallback и эталон)."""
 
