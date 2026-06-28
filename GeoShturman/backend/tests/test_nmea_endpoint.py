@@ -56,3 +56,21 @@ def test_navigation_solve_uses_valid_nmea_measurements() -> None:
     assert data["status"] == "ok"
     assert data["valid_measurement_count"] == 1
     assert data["terrain_summary"]["mean_msl_m"] == 954.6
+
+
+def test_nmea_parse_returns_gps_quality_diagnostics() -> None:
+    response = client.post(
+        "/api/nmea/parse",
+        json={"nmea_text": "$GPGGA,123519.000,4515.0000,N,03930.0000,E,1,10,0.8,545.4,M,0.0,M,,*00"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    item = data["measurements"][0]
+    assert item["gps_enabled"] is True
+    assert item["lat_deg"] == 45.25
+    assert item["lon_deg"] == 39.5
+    assert item["satellites"] == 10
+    assert item["hdop"] == 0.8
+    assert item["input_diagnostic"]["source"] == "gps"
+    assert item["input_diagnostic"]["accepted"] is True
