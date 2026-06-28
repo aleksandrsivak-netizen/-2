@@ -196,18 +196,46 @@
     $("#bm-conf").textContent = fmt(confPct, 1);
     $("#m-acc").textContent = confPct != null ? fmt(confPct, 1) + "%" : "—";
     drawGauge("#confGauge", confPct);
+    if (m.navigation_diagnostics && m.navigation_diagnostics.gps) {
+      const gps = m.navigation_diagnostics.gps;
+      const badge = $("#gnssBadge");
+      if (badge) {
+        badge.textContent = gps.enabled ? (gps.accepted ? "GNSS: OK" : "GNSS: REJECTED") : "GNSS: LOST";
+        badge.className = "hdr__gnss" + (gps.accepted ? " is-ok" : "");
+      }
+    }
     if (m.profile && m.profile.radio && m.profile.radio.length) drawProfile(m.profile.radio, m.profile.terrain || []);
     // позицию ведёт телеметрия (счисление); здесь — только точность фиксации
     if (confPct != null) $("#fp-acc").textContent = fmt(confPct, 1);
     // производительность / режимы (точность CEP — из телеметрии по DR)
+    if (m.tercom_profile) {
+      const p = m.tercom_profile;
+      const mode = (p.mode || "ГеоШтурман").toString().replace(/tercom/gi, "ГеоШтурман").toUpperCase();
+      const searchMs = p.search_time_s != null ? Number(p.search_time_s) * 1000 : null;
+      const timeEl = $("#sysTercomTime");
+      if (timeEl) {
+        timeEl.textContent = searchMs != null ? `${mode} ${fmt(searchMs, 0)} мс` : mode;
+        timeEl.className = searchMs != null && searchMs < 1500 ? "green" : "ok";
+      }
+      const hypEl = $("#sysTercomHyp");
+      if (hypEl) {
+        hypEl.textContent = p.hypotheses != null ? Number(p.hypotheses).toLocaleString("ru-RU") : "—";
+        hypEl.className = "ok";
+      }
+    }
     if (m.solve_ms != null) { const e = $("#m-ms"); e.textContent = `${fmt(m.solve_ms, 0)} мс`; e.className = m.solve_ms < 5000 ? "green" : "warn"; }
-    if (m.mode) { const e = $("#m-mode"); e.textContent = m.mode === "DR" ? "DR (счисление)" : "TRN"; e.className = m.mode === "DR" ? "warn" : "green"; }
+    if (m.navigation_mode) {
+      const e = $("#m-mode");
+      e.textContent = String(m.navigation_mode).replace(/TERCOM/g, "ГЕОШТУРМАН").replace(/tercom/g, "геоштурман");
+      e.className = /REJECTED|STALE|INVALID|DEGRADED/.test(m.navigation_mode) ? "warn" : "green";
+    } else if (m.mode) { const e = $("#m-mode"); e.textContent = m.mode === "DR" ? "DR (счисление)" : String(m.mode).replace(/tercom/gi, "ГеоШтурман"); e.className = m.mode === "DR" ? "warn" : "green"; }
     if (m.integrity) { const e = $("#m-integ"); e.textContent = m.integrity; e.className = m.integrity === "OK" ? "green" : "warn"; }
     state.lastSol = m;
     state.solutions.push({ azimuth_deg: m.azimuth_deg, speed_mps: m.speed_mps, correlation: m.correlation,
-      confidence: m.confidence, lat: m.lat, lon: m.lon, cep50_m: m.cep50_m, cep95_m: m.cep95_m,
-      along_track_m: m.along_track_m, cross_track_m: m.cross_track_m, solve_ms: m.solve_ms,
-      mode: m.mode, integrity: m.integrity });
+        confidence: m.confidence, lat: m.lat, lon: m.lon, cep50_m: m.cep50_m, cep95_m: m.cep95_m,
+        along_track_m: m.along_track_m, cross_track_m: m.cross_track_m, solve_ms: m.solve_ms,
+      mode: m.mode, navigation_mode: m.navigation_mode, integrity: m.integrity,
+      navigation_diagnostics: m.navigation_diagnostics });
     if (state.solutions.length > 2000) state.solutions.shift();
     setSolver("РЕШЕНИЕ НАЙДЕНО", true);
     $("#navTitle").textContent = "НАВИГАЦИЯ АКТИВНА";
@@ -296,7 +324,8 @@
         confidence: s.confidence, lat: s.lat, lon: s.lon,
         cep50_m: s.cep50_m, cep95_m: s.cep95_m,
         along_track_m: s.along_track_m, cross_track_m: s.cross_track_m,
-        solve_ms: s.solve_ms, mode: s.mode, integrity: s.integrity,
+        solve_ms: s.solve_ms, mode: s.mode, navigation_mode: s.navigation_mode,
+        integrity: s.integrity, navigation_diagnostics: s.navigation_diagnostics,
       },
       solutions: state.solutions,
     };
@@ -488,11 +517,22 @@
 
   /* ----- Вкладка 3: Параметры (ручной ввод координат и данных) ----- */
   const pv = (id, def) => { const v = +$("#" + id).value; return isNaN(v) ? def : v; };
+  const pSnapshot = () => ({
+    hz: pv("pHz", 5),
+    duration_s: pv("pDur", 180),
+    speed_mps: pv("pSpd", 45),
+    heading_deg: pv("pAz", 128),
+    barometric_altitude_msl: baroVal(),
+    start_x_m: pv("pX", 4000),
+    start_y_m: pv("pY", 4000),
+    width_m: pv("pSize", 8000),
+    height_m: pv("pSize", 8000),
+    resolution_m: pv("pRes", 30),
+    terrain_type: $("#pTerrain").value,
+    geotiff_path: ($("#pGeoTiff")?.value || "").trim(),
+  });
   $("#pPlay").addEventListener("click", async () => {
-    const p = { hz: pv("pHz", 5), duration_s: pv("pDur", 180), speed_mps: pv("pSpd", 45),
-      heading_deg: pv("pAz", 128), barometric_altitude_msl: baroVal(), start_x_m: pv("pX", 4000),
-      start_y_m: pv("pY", 4000), width_m: pv("pSize", 8000), resolution_m: pv("pRes", 30),
-      terrain_type: $("#pTerrain").value };
+    const p = pSnapshot();
     mStatus("Запуск потока по параметрам…"); closeDrawer();
     if (window.GeoScenes) window.GeoScenes.setAzimuth(p.heading_deg);
     refreshDemGrid(p); // 3D-рельеф должен совпадать с картой, на которой реально летит поток
@@ -500,10 +540,12 @@
     catch { feedAsStream(genTrack(p.barometric_altitude_msl, Math.round(p.duration_s * p.hz), p.hz, p.heading_deg, p.speed_mps, p.start_x_m), p.barometric_altitude_msl, p.hz); }
   });
   $("#pSolve").addEventListener("click", async () => {
-    const body = { width_m: pv("pSize", 8000), height_m: pv("pSize", 8000), resolution_m: pv("pRes", 30),
-      duration_s: pv("pDur", 180), sample_rate_hz: pv("pHz", 5), speed_mps: pv("pSpd", 45),
-      azimuth_deg: pv("pAz", 128), barometric_altitude_msl: baroVal(), search_radius_m: pv("pSearch", 2000),
-      terrain_type: $("#pTerrain").value, enable_kalman: true, seed: 42 };
+    const p = pSnapshot();
+    const body = { width_m: p.width_m, height_m: p.height_m, resolution_m: p.resolution_m,
+      duration_s: p.duration_s, sample_rate_hz: p.hz, speed_mps: p.speed_mps,
+      azimuth_deg: p.heading_deg, barometric_altitude_msl: p.barometric_altitude_msl, search_radius_m: pv("pSearch", 2000),
+      terrain_type: p.terrain_type, start_x_m: p.start_x_m, start_y_m: p.start_y_m, enable_kalman: true, seed: 42 };
+    refreshDemGrid(p);
     mStatus("Полный расчёт ядром…");
     try {
       const r = await fetch("/api/demo/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -517,6 +559,210 @@
       closeDrawer();
     } catch { mStatus("Ядро недоступно (нужен бэкенд). Используйте «Запустить поток».", true); }
   });
+
+  /* ----- Вкладка 4: ГеоШтурман-проверка по heights.txt + GeoTIFF ----- */
+  const tercomFiles = { heights: null, geotiff: null, reference: null };
+  const finiteNum = (id) => {
+    const el = $("#" + id);
+    const value = el ? Number(el.value) : NaN;
+    return Number.isFinite(value) ? value : NaN;
+  };
+  const tercomStep = () => {
+    const speed = finiteNum("tSpeed");
+    const hz = finiteNum("tHz");
+    return speed > 0 && hz > 0 ? speed / hz : NaN;
+  };
+  function updateTercomStep() {
+    const step = tercomStep();
+    const el = $("#tercomStepInfo");
+    if (!el) return;
+    if (Number.isFinite(step)) {
+      el.textContent = `Шаг между измерениями: ${fmt(step, 1)} м`;
+      el.className = "drawer__status";
+    } else {
+      el.textContent = "Задайте скорость и частоту больше нуля.";
+      el.className = "drawer__status err";
+    }
+  }
+  function wireTercomFile(kind, inputId, dropId, nameId) {
+    const input = $("#" + inputId), drop = $("#" + dropId), name = $("#" + nameId);
+    if (!input || !drop || !name) return;
+    const setFile = (file) => {
+      if (!file) return;
+      tercomFiles[kind] = file;
+      name.textContent = `${file.name} · ${(file.size / 1024).toFixed(1)} КБ`;
+      drop.classList.remove("drag");
+    };
+    input.addEventListener("change", (e) => setFile(e.target.files[0]));
+    ["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => {
+      e.preventDefault();
+      drop.classList.add("drag");
+    }));
+    ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
+      e.preventDefault();
+      drop.classList.remove("drag");
+    }));
+    drop.addEventListener("drop", (e) => setFile(e.dataTransfer.files[0]));
+  }
+  function tercomLink(label, href) {
+    const a = document.createElement("a");
+    a.href = tercomArtifactViewHref(href);
+    a.textContent = label;
+    return a;
+  }
+  function tercomArtifactViewHref(href) {
+    const url = new URL(href, location.origin);
+    const match = url.pathname.match(/^\/api\/artifacts\/([^/]+)\/([^/]+)$/);
+    if (!match) return url.href;
+
+    const filename = decodeURIComponent(match[2]);
+    const keysByFilename = {
+      "trajectory_local.csv": "trajectory_local_csv",
+      "trajectory_global.csv": "trajectory_global_csv",
+      "trajectory.geojson": "trajectory_geojson",
+      "trajectory_plot.png": "trajectory_plot_png",
+      "result.json": "result_json",
+      "heights.txt": "heights",
+      "map.tif": "geotiff",
+    };
+    const key = keysByFilename[filename];
+    return key ? new URL(`/api/artifact-view/${match[1]}/${key}`, location.origin).href : url.href;
+  }
+  function showTercomResult(data, step) {
+    const box = $("#tercomResult");
+    if (!box) return;
+    box.hidden = false;
+    box.innerHTML = "";
+
+    const title = document.createElement("div");
+    title.innerHTML = `<b>ГеоШтурман-проверка завершена</b> · точек: ${data.input?.heights_count ?? "—"} · шаг: ${fmt(step, 1)} м`;
+    box.append(title);
+
+    const res = data.result || {};
+    const ref = data.reference_metrics || {};
+    const grid = document.createElement("div");
+    grid.className = "drawer__result-grid";
+    [
+      ["Confidence", fmt(res.confidence, 4)],
+      ["Correlation", fmt(res.correlation, 4)],
+      ["RMSE высот", `${fmt(res.rmse_m, 3)} м`],
+      ["Курс", `${fmt(res.best_heading_deg, 1)}°`],
+      ["Смещение старта", `${fmt(ref.start_offset_m, 3)} м`],
+      ["Средняя ошибка", `${fmt(ref.mean_horizontal_error_m, 3)} м`],
+      ["Макс. ошибка", `${fmt(ref.max_horizontal_error_m, 3)} м`],
+      ["Время", `${fmt(data.diagnostics?.processing_time_ms, 0)} мс`],
+    ].forEach(([label, value]) => {
+      const item = document.createElement("span");
+      item.innerHTML = `<b>${label}:</b> ${value}`;
+      grid.append(item);
+    });
+    box.append(grid);
+
+    const links = data.artifact_view_links || data.artifact_links || {};
+    const linkRow = document.createElement("div");
+    linkRow.className = "drawer__result-links";
+    if (links.trajectory_local_csv) linkRow.append(tercomLink("Локальный CSV", links.trajectory_local_csv));
+    if (links.trajectory_global_csv) linkRow.append(tercomLink("Глобальный CSV", links.trajectory_global_csv));
+    if (links.trajectory_plot_png) linkRow.append(tercomLink("Визуализация", links.trajectory_plot_png));
+    if (links.result_json) linkRow.append(tercomLink("JSON", links.result_json));
+    box.append(linkRow);
+
+    if (data.warnings && data.warnings.length) {
+      const warn = document.createElement("div");
+      warn.textContent = `Предупреждение: ${data.warnings.join("; ")}`;
+      warn.className = "drawer__status err";
+      box.append(warn);
+    }
+  }
+  function applyTercomToDashboard(data, speed) {
+    const localRows = data.trajectory?.local || [];
+    const globalRows = data.trajectory?.global || [];
+    const finiteLocal = localRows.filter((row) => Number.isFinite(Number(row.input_height_m)) && Number.isFinite(Number(row.map_height_m)));
+    const lastGlobal = [...globalRows].reverse().find((row) => Number.isFinite(Number(row.lat)) && Number.isFinite(Number(row.lon)));
+    const profile = finiteLocal.length ? {
+      radio: finiteLocal.slice(0, 220).map((row) => Number(row.input_height_m)),
+      terrain: finiteLocal.slice(0, 220).map((row) => Number(row.map_height_m)),
+    } : null;
+    applySolution({
+      azimuth_deg: data.result?.best_heading_deg,
+      speed_mps: speed,
+      correlation: data.result?.correlation,
+      confidence: data.result?.confidence,
+      lat: lastGlobal ? Number(lastGlobal.lat) : null,
+      lon: lastGlobal ? Number(lastGlobal.lon) : null,
+      profile,
+      mode: "ГеоШтурман",
+    });
+  }
+  async function runTercomCheck() {
+    const heights = tercomFiles.heights;
+    const geotiff = tercomFiles.geotiff;
+    if (!heights) { mStatus("Выберите файл высот heights.txt.", true); return; }
+    if (!geotiff) { mStatus("Выберите GeoTIFF DEM / карту.", true); return; }
+
+    const startX = finiteNum("tStartX");
+    const startY = finiteNum("tStartY");
+    const heading = finiteNum("tHeading");
+    const speed = finiteNum("tSpeed");
+    const step = tercomStep();
+    if (![startX, startY, heading, speed, step].every(Number.isFinite) || step <= 0) {
+      mStatus("Проверьте старт, курс, скорость и частоту.", true);
+      return;
+    }
+
+    const runBtn = $("#tercomRun");
+    if (runBtn) runBtn.disabled = true;
+    mStatus("ГеоШтурман-проверка выполняется...");
+    const form = new FormData();
+    form.append("heights_file", heights);
+    form.append("geotiff_file", geotiff);
+    if (tercomFiles.reference) form.append("reference_trajectory", tercomFiles.reference);
+    form.append("start_x", String(startX));
+    form.append("start_y", String(startY));
+    form.append("heading_deg", String(heading));
+    form.append("start_coord_type", "map");
+    form.append("sample_step_m", String(step));
+    form.append("search_radius_m", String(finiteNum("tSearch") || 200));
+    form.append("search_step_m", "10");
+    form.append("heading_search_deg", "5");
+    form.append("heading_step_deg", "1");
+    form.append("coarse_to_fine", "true");
+    form.append("max_candidates", "12");
+
+    try {
+      const r = await fetch("/api/dorabotka/run", { method: "POST", body: form });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const detail = data.detail?.message || data.detail?.error || data.detail || `HTTP ${r.status}`;
+        throw new Error(String(detail));
+      }
+      showTercomResult(data, step);
+      applyTercomToDashboard(data, speed);
+      refreshDemGrid({
+        geotiff_path: data.input?.geotiff,
+        start_x_m: data.result?.best_start_x_m ?? startX,
+        start_y_m: data.result?.best_start_y_m ?? startY,
+        width_m: Math.max(1000, (finiteNum("tSearch") || 200) * 4),
+        height_m: Math.max(1000, (finiteNum("tSearch") || 200) * 4),
+        resolution_m: 10,
+        terrain_type: "mixed",
+      });
+      mStatus(`ГеоШтурман готов: корреляция ${fmt(data.result?.correlation, 4)}, RMSE ${fmt(data.result?.rmse_m, 2)} м.`);
+    } catch (err) {
+      mStatus(`ГеоШтурман не выполнен: ${err.message || err}`, true);
+    } finally {
+      if (runBtn) runBtn.disabled = false;
+    }
+  }
+  wireTercomFile("heights", "tercomHeightsFile", "tercomHeightsDrop", "tercomHeightsName");
+  wireTercomFile("geotiff", "tercomGeoFile", "tercomGeoDrop", "tercomGeoName");
+  wireTercomFile("reference", "tercomRefFile", "tercomRefDrop", "tercomRefName");
+  ["tSpeed", "tHz"].forEach((id) => {
+    const el = $("#" + id);
+    if (el) el.addEventListener("input", updateTercomStep);
+  });
+  $("#tercomRun") && $("#tercomRun").addEventListener("click", runTercomCheck);
+  updateTercomStep();
 
   /* ----- Кнопки управления 3D-картой ----- */
   const G = () => window.GeoScenes;
@@ -539,18 +785,44 @@
     const q = new URLSearchParams({
       width_m: p.width_m ?? 8000, height_m: p.height_m ?? p.width_m ?? 8000,
       resolution_m: p.resolution_m ?? 30, terrain_type: p.terrain_type ?? "mixed", side: 72,
+      center_x_m: p.start_x_m ?? pv("pX", 4000), center_y_m: p.start_y_m ?? pv("pY", 4000),
     });
+    if (p.geotiff_path) q.set("geotiff_path", p.geotiff_path);
     try {
       const r = await fetch(`/api/dem/grid?${q.toString()}`);
       if (!r.ok) return;
       const g = await r.json();
+      if (g.error) {
+        pushMsg(`DEM не загружен: ${g.error}`, "alert");
+        const d = $("#fDem"); if (d) { d.textContent = "ERR"; d.className = "warn"; }
+        return;
+      }
       if (g.z && g.z.length && window.GeoScenes) {
         window.GeoScenes.setTerrainGrid(g.z);
-        pushMsg(`DEM загружен: ${g.source} · перепад ${g.span_m} м`, "ok");
-        const d = $("#fDem"); if (d) { const real = /coper|glo/i.test(g.source); d.textContent = real ? "GLO-30" : "СИНТЕТ"; d.className = real ? "green" : "ok"; }
+        pushMsg(`DEM загружен: ${g.source} · X ${fmt(g.center_x_m, 0)} · Y ${fmt(g.center_y_m, 0)} · перепад ${g.span_m} м`, "ok");
+        const d = $("#fDem"); if (d) {
+          const real = /coper|glo/i.test(g.source), geotiff = /geotiff/i.test(g.source);
+          d.textContent = geotiff ? "GEOTIFF" : (real ? "GLO-30" : "СИНТЕТ");
+          d.className = real || geotiff ? "green" : "ok";
+        }
       }
     } catch {}
   }
-  refreshDemGrid();
+  let demRefreshTimer = null;
+  function scheduleDemRefresh() {
+    clearTimeout(demRefreshTimer);
+    demRefreshTimer = setTimeout(() => {
+      const p = pSnapshot();
+      if (window.GeoScenes) window.GeoScenes.setAzimuth(p.heading_deg);
+      refreshDemGrid(p);
+    }, 320);
+  }
+  ["pX", "pY", "pSize", "pRes", "pAz", "pGeoTiff"].forEach((id) => {
+    const el = $("#" + id);
+    if (el) el.addEventListener("input", scheduleDemRefresh);
+  });
+  const terrainSelect = $("#pTerrain");
+  if (terrainSelect) terrainSelect.addEventListener("change", scheduleDemRefresh);
+  refreshDemGrid(pSnapshot());
   connect();
 })();
