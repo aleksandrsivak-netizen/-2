@@ -18,6 +18,23 @@ def test_parse_gpgga_radio_altitude() -> None:
     assert record.satellites == 8
 
 
+def test_parse_gpgga_gps_quality_fields() -> None:
+    line = generate_gpgga(
+        987.65,
+        3.5,
+        lat_deg=45.25,
+        lon_deg=39.5,
+        satellites=11,
+        hdop=0.8,
+    )
+    record = parse_gpgga(line)
+
+    assert record.lat_deg == pytest.approx(45.25)
+    assert record.lon_deg == pytest.approx(39.5)
+    assert record.hdop == pytest.approx(0.8)
+    assert record.satellites == 11
+
+
 def test_invalid_checksum_raises() -> None:
     line = generate_gpgga(100.0, 0.0)
     bad = line[:-2] + "00"
